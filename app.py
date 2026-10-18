@@ -7,7 +7,8 @@ Segreti (Streamlit Cloud → Settings → Secrets):
     [ai]                            # facoltativo: generazione testi
     api_key = "sk-ant-..."          # chiave API Anthropic ("demo" = prova senza costi)
     model = "claude-sonnet-5-5"
-    limite_giornaliero = 20         # generazioni al giorno per utente
+    limite_giornaliero = 10         # generazioni al giorno per corsista (l'amministratore non ha limiti)
+    limite_mensile = 60             # generazioni al mese per corsista (modificabile per singolo utente)
     [db]
     url = "postgresql+psycopg2://utente:password@host:5432/nomedb?sslmode=require"
 """
@@ -31,8 +32,36 @@ GRUPPI = ["A", "B", "C", "D", "E", "F"]
 STATI_ASI = ["Da fare", "Da personalizzare", "Pronto", "Inviato", "Approvato"]
 STATI_CAP = ["Da iniziare", "In bozza", "Rivisto", "Definitivo"]
 TIPI_TIR = ["diretto", "collegiali", "documentazione", "registro25", "indiretto"]
-CATEGORIE = ["Asincrone", "Tirocinio diretto", "Tirocinio indiretto", "Registri e firme",
-             "Relazione finale", "Materiale lezioni", "Documenti personali", "Altro"]
+# ---- cartelle dei documenti: (nome breve usato nel calendario, nome ufficiale dell'insegnamento)
+INSEGNAMENTI_UFF = [
+    ("Didattica metacognitiva", "Didattica speciale: approccio metacognitivo e cooperativo – PED/03"),
+    ("Did. disabilità sensoriali", "Didattica speciale e apprendimenti per le disabilità sensoriali – PED/03"),
+    ("Pedagogia relazione d’aiuto", "Pedagogia della relazione d’aiuto – PED/01"),
+    ("Ped. e Did. disabilità intellettiva", "Pedagogia e didattica speciale della disabilità intellettiva e dei disturbi generalizzati dello sviluppo – PED/03"),
+    ("Ped. speciale gestione gruppo classe", "Pedagogia speciale della gestione integrata del gruppo classe – PED/03"),
+    ("Progettazione PDF e PEI", "Progettazione del PDF e del PEI – progetto di vita e modelli di qualità della vita: dalla programmazione alla valutazione – PED/03"),
+    ("Modelli integrati", "Modelli integrati di interventi psico-educativi per la disabilità intellettiva e dei disturbi generalizzati dello sviluppo – M-PSI/04"),
+    ("Psicologia dello sviluppo", "Psicologia dello sviluppo, dell’educazione e dell’istruzione: modelli di apprendimento – M-PSI/04"),
+    ("Legislazione scolastica", "Legislazione primaria e secondaria riferita all’integrazione scolastica – IUS/09"),
+    ("Neuropsichiatria Infantile", "Neuropsichiatria Infantile – MED/39")]
+UFFICIALE = dict(INSEGNAMENTI_UFF)
+LABORATORI = [
+    "LAB: Didattica delle educazioni e dell’area antropologica",
+    "LAB: Didattica per le disabilità sensoriali",
+    "LAB: Didattica speciale: codici comunicativi dell’educazione linguistica",
+    "LAB: Didattica speciale: codici del linguaggio logico e matematico",
+    "LAB: Interventi psico-educativi e didattici con disturbi comportamentali",
+    "LAB: Interventi psico-educativi e didattici con disturbi relazionali",
+    "LAB: Linguaggi e tecniche comunicative non verbali",
+    "LAB: Metodi e didattiche delle attività motorie",
+    "LAB: Orientamento e progetto di vita"]
+ATTIVITA = ["TIC: tecnologie dell’informazione e della comunicazione (lezione online)",
+            "Tirocinio indiretto con tutor in presenza all’università",
+            "Tirocinio diretto in presenza con scuola convenzionata"]
+GENERALI = ["Relazione finale", "Registri e firme", "Documenti personali", "Altro"]
+AREE = {"Insegnamenti": [u for _, u in INSEGNAMENTI_UFF], "Laboratori": LABORATORI,
+        "Altre attività": ATTIVITA, "Generali": GENERALI}
+SOTTOCARTELLE = ["Moduli didattica asincrona", "Slide e materiali di studio", "Elaborati e consegne", "Altro"]
 MAX_FILE_MB, QUOTA_MB = 20, 500
 CAPITOLI = [
     "1. Macrocontesto – Denominazione e tipologia istituto",
@@ -97,10 +126,15 @@ def init_db():
         for stmt in DDL.split(";"):
             if stmt.strip():
                 c.execute(text(stmt))
+        c.execute(text(f"ALTER TABLE {S}.documenti ADD COLUMN IF NOT EXISTS area TEXT"))
+        c.execute(text(f"ALTER TABLE {S}.utenti ADD COLUMN IF NOT EXISTS limite_mensile INT"))
         if c.execute(text(f"SELECT COUNT(*) FROM {S}.insegnamenti")).scalar():
+            c.execute(text(f"""INSERT INTO {S}.insegnamenti (nome, docente, email, ore)
+                VALUES ('Legislazione scolastica', '', '', 25) ON CONFLICT (nome) DO NOTHING"""))
             return
         d = seed()
-        pd.DataFrame(d["insegnamenti"]).to_sql("insegnamenti", c, schema=S, if_exists="append", index=False)
+        pd.DataFrame(d["insegnamenti"] + [{"nome": "Legislazione scolastica", "docente": "", "email": "", "ore": 25}]).to_sql(
+            "insegnamenti", c, schema=S, if_exists="append", index=False)
         pd.DataFrame(d["lezioni"]).assign(gruppo="C").to_sql("lezioni", c, schema=S, if_exists="append", index=False)
         pd.DataFrame(d["seminari"]).to_sql("seminari", c, schema=S, if_exists="append", index=False)
         pd.DataFrame(d["monte_ore"]).to_sql("monte_ore", c, schema=S, if_exists="append", index=False)
@@ -342,56 +376,85 @@ def pag_tirocinio():
            ore=st.column_config.NumberColumn("Ore", min_value=0.0, step=0.5))
 
 
-def pag_documenti():
-    st.title("I miei documenti")
-    st.caption(f"Visibili solo a te. Massimo {MAX_FILE_MB} MB per file, {QUOTA_MB} MB in totale. Non caricare dati identificativi o sanitari di alunni.")
-    usato = q(f"SELECT COALESCE(SUM(dimensione),0) AS b FROM {S}.documenti WHERE utente_id=:u", u=uid())["b"].iloc[0] / 1e6
-    st.progress(min(usato / QUOTA_MB, 1.0), text=f"{usato:.1f} MB su {QUOTA_MB} MB")
-    with st.expander("Carica documenti", expanded=False):
-        with st.form("up", clear_on_submit=True):
-            files = st.file_uploader("File", accept_multiple_files=True)
-            c1, c2 = st.columns(2)
-            cat = c1.selectbox("Categoria", CATEGORIE)
-            cap = c2.selectbox("Capitolo della relazione (facoltativo)", ["—"] + CAPITOLI)
-            note = st.text_input("Note")
-            if st.form_submit_button("Carica", type="primary") and files:
-                for f in files:
-                    b = f.getvalue()
-                    if len(b) > MAX_FILE_MB * 1e6:
-                        st.error(f"{f.name}: supera {MAX_FILE_MB} MB."); continue
-                    if usato + len(b) / 1e6 > QUOTA_MB:
-                        st.error("Spazio esaurito."); break
-                    v = q(f"SELECT COALESCE(MAX(versione),0)+1 AS v FROM {S}.documenti WHERE utente_id=:u AND nome_file=:n AND categoria=:c",
-                          u=uid(), n=f.name, c=cat)["v"].iloc[0]
-                    run(f"""INSERT INTO {S}.documenti (utente_id,categoria,capitolo,nome_file,mime,dimensione,versione,note,contenuto)
-                        VALUES (:u,:c,:cap,:n,:m,:d,:v,:no,:b)""", u=uid(), c=cat, cap=None if cap == "—" else cap,
-                        n=f.name, m=f.type or "application/octet-stream", d=len(b), v=int(v), no=note, b=b)
-                    usato += len(b) / 1e6
-                st.toast("Documenti caricati.")
-                st.rerun()
-    docs = q(f"""SELECT id, categoria, capitolo, nome_file, versione, dimensione, note, caricato_il
-                 FROM {S}.documenti WHERE utente_id=:u ORDER BY caricato_il DESC""", u=uid())
+def salva_file(f, area, sotto, capitolo=None, note=""):
+    """Salva un file caricato nella cartella area/sottocartella, con numero di versione."""
+    b = f.getvalue() if hasattr(f, "getvalue") else f["bytes"]
+    nome = f.name if hasattr(f, "name") else f["name"]
+    mime = (getattr(f, "type", None) if hasattr(f, "type") else f.get("mime")) or "application/octet-stream"
+    if len(b) > MAX_FILE_MB * 1e6:
+        st.error(f"{nome}: supera {MAX_FILE_MB} MB."); return False
+    usato = q(f"SELECT COALESCE(SUM(dimensione),0) AS b FROM {S}.documenti WHERE utente_id=:u", u=uid())["b"].iloc[0]
+    if (usato + len(b)) / 1e6 > QUOTA_MB:
+        st.error("Spazio esaurito."); return False
+    v = q(f"""SELECT COALESCE(MAX(versione),0)+1 AS v FROM {S}.documenti
+              WHERE utente_id=:u AND nome_file=:n AND COALESCE(area,'')=:a AND categoria=:c""",
+          u=uid(), n=nome, a=area, c=sotto)["v"].iloc[0]
+    run(f"""INSERT INTO {S}.documenti (utente_id,area,categoria,capitolo,nome_file,mime,dimensione,versione,note,contenuto)
+            VALUES (:u,:a,:c,:cap,:n,:m,:d,:v,:no,:b)""", u=uid(), a=area, c=sotto, cap=capitolo,
+        n=nome, m=mime, d=len(b), v=int(v), no=note, b=b)
+    return True
+
+
+def elenco_file(docs, key):
+    """Tabella dei file con apertura, download ed eliminazione."""
     if docs.empty:
-        st.info("Nessun documento: caricane uno dal riquadro qui sopra.")
+        st.info("Cartella vuota: carica il primo file qui sopra.")
         return
-    c1, c2 = st.columns([1, 2])
-    filtro = c1.selectbox("Categoria", ["Tutte"] + CATEGORIE)
-    cerca = c2.text_input("Cerca nel nome o nelle note")
-    if filtro != "Tutte":
-        docs = docs[docs["categoria"] == filtro]
-    if cerca:
-        docs = docs[docs["nome_file"].str.contains(cerca, case=False) | docs["note"].fillna("").str.contains(cerca, case=False)]
-    docs = docs.assign(KB=(docs["dimensione"] / 1024).round(0), caricato=pd.to_datetime(docs["caricato_il"]).dt.tz_convert(TZ).dt.strftime("%d/%m/%Y %H:%M"))
-    st.dataframe(docs[["categoria", "nome_file", "versione", "KB", "capitolo", "note", "caricato"]], hide_index=True, width="stretch")
-    scelta = st.selectbox("Apri un documento", docs["id"].tolist(),
-                          format_func=lambda i: (lambda r: f"{r['nome_file']} · v{r['versione']} · {r['categoria']}")(docs.set_index("id").loc[i]))
+    docs = docs.assign(KB=(docs["dimensione"] / 1024).round(0),
+                       caricato=pd.to_datetime(docs["caricato_il"]).dt.tz_convert(TZ).dt.strftime("%d/%m/%Y %H:%M"))
+    st.dataframe(docs[["nome_file", "versione", "KB", "note", "caricato"]], hide_index=True, width="stretch",
+                 column_config={"nome_file": "File", "versione": "Ver."})
+    idx = docs.set_index("id")
+    scelta = st.selectbox("Apri", docs["id"].tolist(), key=f"sel_{key}",
+                          format_func=lambda i: f"{idx.loc[i, 'nome_file']} · v{idx.loc[i, 'versione']}")
     r = q(f"SELECT nome_file, mime, contenuto FROM {S}.documenti WHERE id=:i AND utente_id=:u", i=int(scelta), u=uid()).iloc[0]
     c1, c2 = st.columns(2)
-    c1.download_button("Scarica", bytes(r["contenuto"]), file_name=r["nome_file"], mime=r["mime"], type="primary")
-    if c2.button("Elimina questo documento"):
+    c1.download_button("Scarica", bytes(r["contenuto"]), file_name=r["nome_file"], mime=r["mime"], type="primary", key=f"dl_{key}")
+    if c2.button("Elimina", key=f"del_{key}"):
         run(f"DELETE FROM {S}.documenti WHERE id=:i AND utente_id=:u", i=int(scelta), u=uid())
         st.toast("Documento eliminato.")
         st.rerun()
+
+
+def pag_documenti():
+    st.title("I miei documenti")
+    st.caption(f"Cartelle per insegnamento, laboratorio e attività. Visibili solo a te · max {MAX_FILE_MB} MB per file, "
+               f"{QUOTA_MB} MB in totale · niente dati identificativi o sanitari di alunni.")
+    meta = q(f"""SELECT id, COALESCE(area,'Altro') AS area, COALESCE(categoria,'Altro') AS categoria, capitolo, nome_file,
+                 versione, dimensione, note, caricato_il FROM {S}.documenti WHERE utente_id=:u ORDER BY caricato_il DESC""", u=uid())
+    usato = meta["dimensione"].sum() / 1e6 if not meta.empty else 0
+    st.progress(min(usato / QUOTA_MB, 1.0), text=f"{usato:.1f} MB su {QUOTA_MB} MB")
+    conteggi = meta.groupby("area").size().to_dict() if not meta.empty else {}
+
+    nav, main = st.columns([1, 2.6], gap="large")
+    with nav:
+        gruppo = st.radio("Sezione", list(AREE), key="doc_gruppo")
+        area = st.radio("Cartella", AREE[gruppo], key=f"doc_area_{gruppo}",
+                        format_func=lambda a: f"{a}  ({conteggi.get(a, 0)})")
+    with main:
+        st.subheader(area)
+        sotto_list = ["Documenti"] if gruppo == "Generali" else SOTTOCARTELLE
+        for tab, sotto in zip(st.tabs([f"{x} ({len(meta[(meta['area'] == area) & (meta['categoria'] == x)])})" for x in sotto_list]), sotto_list):
+            with tab:
+                k = f"{abs(hash(area)) % 10**8}_{sotto_list.index(sotto)}"
+                with st.form(f"up_{k}", clear_on_submit=True):
+                    files = st.file_uploader("Aggiungi file", accept_multiple_files=True, key=f"fu_{k}")
+                    cap = st.selectbox("Capitolo", ["—"] + CAPITOLI, key=f"cap_{k}") if area == "Relazione finale" else "—"
+                    note = st.text_input("Note", key=f"no_{k}")
+                    if st.form_submit_button("Carica", type="primary") and files:
+                        n = sum(salva_file(f, area, sotto, None if cap == "—" else cap, note) for f in files)
+                        if n:
+                            st.toast(f"{n} file caricati in {sotto}.")
+                            st.rerun()
+                elenco_file(meta[(meta["area"] == area) & (meta["categoria"] == sotto)], k)
+
+    st.divider()
+    cerca = st.text_input("Cerca in tutti i miei documenti (nome o note)")
+    if cerca:
+        trovati = meta[meta["nome_file"].str.contains(cerca, case=False) | meta["note"].fillna("").str.contains(cerca, case=False)]
+        st.dataframe(trovati[["area", "categoria", "nome_file", "versione", "note"]], hide_index=True, width="stretch")
+        if not trovati.empty:
+            elenco_file(trovati, "cerca")
 
 
 def pag_tesi():
@@ -460,8 +523,9 @@ def pag_profilo():
                 z.writestr("profilo.json", u.drop("pwd_hash").to_json(force_ascii=False, date_format="iso"))
                 for t in ["asincrone", "assenze", "tirocinio", "viaggi", "tesi", "generazioni"]:
                     z.writestr(f"{t}.csv", personale(t).to_csv(index=False))
-                for _, d in q(f"SELECT id, categoria, nome_file, versione, contenuto FROM {S}.documenti WHERE utente_id=:u", u=uid()).iterrows():
-                    z.writestr(f"documenti/{d['categoria']}/v{d['versione']}_{d['id']}_{d['nome_file']}", bytes(d["contenuto"]))
+                for _, d in q(f"SELECT id, COALESCE(area,'Altro') AS area, categoria, nome_file, versione, contenuto FROM {S}.documenti WHERE utente_id=:u", u=uid()).iterrows():
+                    cartella = re.sub(r'[\\/:*?"<>|]', "-", d["area"])[:80]
+                    z.writestr(f"documenti/{cartella}/{d['categoria']}/v{d['versione']}_{d['id']}_{d['nome_file']}", bytes(d["contenuto"]))
             st.download_button("Scarica lo zip", buf.getvalue(), file_name="tfa_miei_dati.zip", mime="application/zip")
         st.divider()
         conf = st.text_input("Per cancellare l'account scrivi ELIMINA")
@@ -476,15 +540,20 @@ def pag_admin():
     st.caption("L'amministratore gestisce iscritti e dati comuni. Non ha accesso ai documenti né ai registri dei corsisti.")
     t1, t2, t3, t4, t5 = st.tabs(["Iscritti", "Calendario", "Insegnamenti", "Seminari", "Uso generazione testi"])
     with t1:
-        ut = q(f"SELECT id, username, nome, cognome, gruppo, email, ruolo, attivo, creato_il, ultimo_accesso FROM {S}.utenti ORDER BY cognome")
+        ut = q(f"SELECT id, username, nome, cognome, gruppo, email, ruolo, attivo, limite_mensile, creato_il, ultimo_accesso FROM {S}.utenti ORDER BY cognome")
         out = st.data_editor(ut, hide_index=True, width="stretch", key="adm_ut",
                              disabled=["id", "username", "nome", "cognome", "email", "ruolo", "creato_il", "ultimo_accesso"],
-                             column_config={"gruppo": st.column_config.SelectboxColumn(options=GRUPPI)})
+                             column_config={"gruppo": st.column_config.SelectboxColumn(options=GRUPPI),
+                                            "limite_mensile": st.column_config.NumberColumn(
+                                                "Limite mensile testi", min_value=0, step=5,
+                                                help="Vuoto = valore predefinito dei Secrets. 0 = generazione disattivata. Non vale per l'amministratore.")})
         if st.button("Salva iscritti", type="primary"):
             for _, r in out.iterrows():
                 if int(r["id"]) == uid() and not r["attivo"]:
                     st.error("Non puoi disattivare il tuo account."); break
-                run(f"UPDATE {S}.utenti SET attivo=:a, gruppo=:g WHERE id=:i", a=bool(r["attivo"]), g=r["gruppo"], i=int(r["id"]))
+                lim = None if pd.isna(r["limite_mensile"]) else int(r["limite_mensile"])
+                run(f"UPDATE {S}.utenti SET attivo=:a, gruppo=:g, limite_mensile=:l WHERE id=:i",
+                    a=bool(r["attivo"]), g=r["gruppo"], l=lim, i=int(r["id"]))
             else:
                 st.toast("Iscritti aggiornati.")
         st.caption("Unico amministratore: l'utente indicato in admin_username nei Secrets. Il ruolo non si modifica da qui.")
@@ -503,11 +572,15 @@ def pag_admin():
                data=st.column_config.DateColumn(format="DD/MM/YYYY"))
     with t5:
         st.caption("Solo conteggi e token per il controllo dei costi: i testi restano privati.")
-        st.dataframe(q(f"""SELECT u.username, COUNT(g.id) AS generazioni, COALESCE(SUM(g.token_in),0) AS token_in,
+        default = int(st.secrets.get("ai", {}).get("limite_mensile", 60))
+        uso = q(f"""SELECT u.username, u.ruolo, u.limite_mensile, COUNT(g.id) AS generazioni, COALESCE(SUM(g.token_in),0) AS token_in,
                 COALESCE(SUM(g.token_out),0) AS token_out, MAX(g.creato_il) AS ultima
                 FROM {S}.utenti u LEFT JOIN {S}.generazioni g ON g.utente_id=u.id
-                AND g.creato_il >= date_trunc('month', now()) GROUP BY u.username ORDER BY generazioni DESC"""),
-            hide_index=True, width="stretch")
+                AND g.creato_il >= date_trunc('month', now()) GROUP BY u.username, u.ruolo, u.limite_mensile ORDER BY generazioni DESC""")
+        uso["limite"] = uso.apply(lambda r: "nessuno" if r["ruolo"] == "admin" else
+                                  str(int(r["limite_mensile"]) if pd.notna(r["limite_mensile"]) else default), axis=1)
+        st.dataframe(uso.drop(columns=["ruolo", "limite_mensile"]), hide_index=True, width="stretch")
+        st.caption("I limiti per singolo iscritto si modificano nella scheda «Iscritti».")
 
 
 
@@ -598,9 +671,21 @@ def pag_genera():
     if not cfg.get("api_key"):
         st.warning("Generazione non attiva: l'amministratore deve inserire la chiave API nella sezione [ai] dei Secrets.")
         return
-    limite = int(cfg.get("limite_giornaliero", 20))
-    usate = int(q(f"SELECT COUNT(*) AS n FROM {S}.generazioni WHERE utente_id=:u AND creato_il::date = CURRENT_DATE", u=uid())["n"].iloc[0])
-    st.caption(f"Le bozze vanno rilette e personalizzate: gli elaborati devono essere originali. Oggi: {usate}/{limite} generazioni.")
+    uso = q(f"""SELECT COUNT(*) FILTER (WHERE creato_il >= date_trunc('day', now() AT TIME ZONE 'Europe/Rome') AT TIME ZONE 'Europe/Rome') AS oggi,
+                       COUNT(*) FILTER (WHERE creato_il >= date_trunc('month', now() AT TIME ZONE 'Europe/Rome') AT TIME ZONE 'Europe/Rome') AS mese
+                FROM {S}.generazioni WHERE utente_id=:u""", u=uid()).iloc[0]
+    if me().get("ruolo") == "admin":
+        bloccato = False
+        st.caption(f"Le bozze vanno rilette e personalizzate: gli elaborati devono essere originali. Amministratore: nessun limite (questo mese {int(uso['mese'])}).")
+    else:
+        lim_g = int(cfg.get("limite_giornaliero", 10))
+        lim_pers = q(f"SELECT limite_mensile FROM {S}.utenti WHERE id=:u", u=uid())["limite_mensile"].iloc[0]
+        lim_m = int(lim_pers) if pd.notna(lim_pers) else int(cfg.get("limite_mensile", 60))
+        bloccato = uso["oggi"] >= lim_g or uso["mese"] >= lim_m
+        st.caption(f"Le bozze vanno rilette e personalizzate: gli elaborati devono essere originali. "
+                   f"Oggi {int(uso['oggi'])}/{lim_g} · questo mese {int(uso['mese'])}/{lim_m} generazioni.")
+        if bloccato:
+            st.warning("Hai raggiunto il limite di generazioni: riprova domani o il mese prossimo, oppure chiedi all'amministratore di aumentarlo.")
     ins = q(f"SELECT nome FROM {S}.insegnamenti ORDER BY nome")["nome"].tolist()
     docs = q(f"SELECT id, nome_file, versione, categoria FROM {S}.documenti WHERE utente_id=:u ORDER BY caricato_il DESC", u=uid())
 
@@ -616,7 +701,7 @@ def pag_genera():
     fonti = st.multiselect("Usa come fonte i miei documenti (facoltativo)", docs["id"].tolist(),
                            format_func=lambda i: (lambda r: f"{r['nome_file']} v{r['versione']} · {r['categoria']}")(docs.set_index("id").loc[i]),
                            max_selections=3)
-    if st.button("Genera bozza", type="primary", disabled=usate >= limite):
+    if st.button("Genera bozza", type="primary", disabled=bool(bloccato)):
         if not traccia.strip() and tipo not in ("Riassunto di un documento",):
             st.error("Scrivi la traccia o le note da cui partire."); return
         if tipo == "Riassunto di un documento" and not fonti:
@@ -634,7 +719,7 @@ def pag_genera():
         tin, tout = st.session_state.get("_uso", (0, 0))
         run(f"""INSERT INTO {S}.generazioni (utente_id,tipo,richiesta,testo,caratteri,token_in,token_out)
                 VALUES (:u,:t,:r,:x,:c,:i,:o)""", u=uid(), t=tipo, r=traccia[:4000], x=testo, c=len(testo), i=tin, o=tout)
-        st.session_state["ultima"] = {"tipo": tipo, "titolo": capitolo or insegnamento or tipo, "testo": testo}
+        st.session_state["ultima"] = {"tipo": tipo, "titolo": capitolo or insegnamento or tipo, "testo": testo, "insegnamento": insegnamento}
         st.rerun()
 
     ult = st.session_state.get("ultima")
@@ -647,15 +732,17 @@ def pag_genera():
         c1, c2, c3 = st.columns(3)
         c1.download_button("Scarica Word", b, file_name=nome,
                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-        cat = "Relazione finale" if ult["tipo"] == "Capitolo della relazione finale" else "Asincrone" if ult["tipo"] == "Elaborato asincrono" else "Altro"
+        if ult["tipo"] == "Capitolo della relazione finale":
+            area, sotto, cap = "Relazione finale", "Documenti", ult["titolo"]
+        elif ult.get("insegnamento") in UFFICIALE:
+            area, cap = UFFICIALE[ult["insegnamento"]], None
+            sotto = "Elaborati e consegne" if ult["tipo"] == "Elaborato asincrono" else "Altro"
+        else:
+            area, sotto, cap = "Altro", "Documenti", None
         if c2.button("Salva nei miei documenti"):
-            v = q(f"SELECT COALESCE(MAX(versione),0)+1 AS v FROM {S}.documenti WHERE utente_id=:u AND nome_file=:n AND categoria=:c",
-                  u=uid(), n=nome, c=cat)["v"].iloc[0]
-            run(f"""INSERT INTO {S}.documenti (utente_id,categoria,capitolo,nome_file,mime,dimensione,versione,note,contenuto)
-                    VALUES (:u,:c,:cap,:n,:m,:d,:v,'Bozza generata',:b)""", u=uid(), c=cat,
-                cap=ult["titolo"] if cat == "Relazione finale" else None, n=nome,
-                m="application/vnd.openxmlformats-officedocument.wordprocessingml.document", d=len(b), v=int(v), b=b)
-            st.toast(f"Salvato in Documenti › {cat}.")
+            if salva_file({"bytes": b, "name": nome, "mime": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
+                          area, sotto, cap, "Bozza generata"):
+                st.toast(f"Salvato in Documenti › {area} › {sotto}.")
         if c3.button("Scarta"):
             del st.session_state["ultima"]
             st.rerun()
