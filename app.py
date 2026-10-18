@@ -162,21 +162,38 @@ def seed():
     return json.loads((Path(__file__).parent / "data" / "seed.json").read_text(encoding="utf-8"))
 
 
+def aggiungi_colonna(c, tabella, definizione):
+    """ALTER TABLE solo se la colonna manca: evita blocchi esclusivi inutili a ogni avvio."""
+    nome = definizione.split()[0]
+    esiste = c.execute(text("""SELECT 1 FROM information_schema.columns
+                               WHERE table_schema=:s AND table_name=:t AND column_name=:c"""),
+                       {"s": S, "t": tabella, "c": nome}).first()
+    if not esiste:
+        c.execute(text(f"ALTER TABLE {S}.{tabella} ADD COLUMN IF NOT EXISTS {definizione}"))
+
+
+@st.cache_resource(show_spinner=False)
 def init_db():
+    """Eseguita una sola volta per avvio dell'app; il lock evita che due sessioni la eseguano insieme."""
     with engine().begin() as c:
+        c.execute(text("SELECT pg_advisory_xact_lock(724501)"))
+        _init_db(c)
+    return True
+
+
+def _init_db(c):
+    if True:
         for stmt in DDL.split(";"):
             if stmt.strip():
                 c.execute(text(stmt))
         if not c.execute(text(f"SELECT COUNT(*) FROM {S}.spot")).scalar():
             pd.DataFrame(SPOT_DEFAULT).to_sql("spot", c, schema=S, if_exists="append", index=False)
             c.execute(text(f"INSERT INTO {S}.impostazioni VALUES ('spot_attivo','1') ON CONFLICT DO NOTHING"))
-        c.execute(text(f"ALTER TABLE {S}.documenti ADD COLUMN IF NOT EXISTS area TEXT"))
-        c.execute(text(f"ALTER TABLE {S}.utenti ADD COLUMN IF NOT EXISTS limite_mensile INT"))
-        c.execute(text(f"ALTER TABLE {S}.utenti ADD COLUMN IF NOT EXISTS citta_partenza TEXT"))
-        c.execute(text(f"ALTER TABLE {S}.utenti ADD COLUMN IF NOT EXISTS pwd_temporanea BOOLEAN DEFAULT FALSE"))
-        c.execute(text(f"ALTER TABLE {S}.utenti ADD COLUMN IF NOT EXISTS referente BOOLEAN DEFAULT FALSE"))
+        aggiungi_colonna(c, "documenti", "area TEXT")
+        for col in ("limite_mensile INT", "citta_partenza TEXT", "pwd_temporanea BOOLEAN DEFAULT FALSE", "referente BOOLEAN DEFAULT FALSE"):
+            aggiungi_colonna(c, "utenti", col)
         for col in ("data DATE", "partenza TEXT", "destinazione TEXT", "mezzo TEXT", "dettaglio TEXT", "creato_il TIMESTAMPTZ DEFAULT now()"):
-            c.execute(text(f"ALTER TABLE {S}.viaggi ADD COLUMN IF NOT EXISTS {col}"))
+            aggiungi_colonna(c, "viaggi", col)
         if c.execute(text(f"SELECT COUNT(*) FROM {S}.insegnamenti")).scalar():
             c.execute(text(f"""INSERT INTO {S}.insegnamenti (nome, docente, email, ore)
                 VALUES ('Legislazione scolastica', '', '', 25) ON CONFLICT (nome) DO NOTHING"""))
@@ -1263,7 +1280,10 @@ try:
     init_db()
 except Exception as e:
     st.error(f"Connessione al database non riuscita: {e}")
-    st.info("Controlla il segreto [db] url e che il server OVH accetti connessioni esterne con SSL.")
+    if "deadlock" in str(e).lower() or "lock" in str(e).lower():
+        st.info("Il database era occupato da un'altra sessione: ricarica la pagina tra qualche secondo.")
+    else:
+        st.info("Controlla il segreto [db] url e che il server OVH accetti connessioni esterne con SSL.")
     st.stop()
 
 if not accesso():
