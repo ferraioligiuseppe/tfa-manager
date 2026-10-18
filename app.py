@@ -112,6 +112,8 @@ CREATE TABLE IF NOT EXISTS {S}.documenti (id SERIAL PRIMARY KEY, utente_id INT R
   categoria TEXT, capitolo TEXT, nome_file TEXT, mime TEXT, dimensione INT, versione INT DEFAULT 1, note TEXT,
   contenuto BYTEA, caricato_il TIMESTAMPTZ DEFAULT now());
 CREATE INDEX IF NOT EXISTS documenti_utente ON {S}.documenti(utente_id);
+CREATE TABLE IF NOT EXISTS {S}.soggiorni (id SERIAL PRIMARY KEY, utente_id INT REFERENCES {S}.utenti(id) ON DELETE CASCADE,
+  checkin DATE, checkout DATE, vicino_a TEXT, persone INT, budget INT, tipologie TEXT, dettaglio TEXT, creato_il TIMESTAMPTZ DEFAULT now());
 CREATE TABLE IF NOT EXISTS {S}.generazioni (id SERIAL PRIMARY KEY, utente_id INT REFERENCES {S}.utenti(id) ON DELETE CASCADE,
   tipo TEXT, richiesta TEXT, testo TEXT, caratteri INT, token_in INT, token_out INT, creato_il TIMESTAMPTZ DEFAULT now())
 """
@@ -128,6 +130,9 @@ def init_db():
                 c.execute(text(stmt))
         c.execute(text(f"ALTER TABLE {S}.documenti ADD COLUMN IF NOT EXISTS area TEXT"))
         c.execute(text(f"ALTER TABLE {S}.utenti ADD COLUMN IF NOT EXISTS limite_mensile INT"))
+        c.execute(text(f"ALTER TABLE {S}.utenti ADD COLUMN IF NOT EXISTS citta_partenza TEXT"))
+        for col in ("data DATE", "partenza TEXT", "destinazione TEXT", "mezzo TEXT", "dettaglio TEXT", "creato_il TIMESTAMPTZ DEFAULT now()"):
+            c.execute(text(f"ALTER TABLE {S}.viaggi ADD COLUMN IF NOT EXISTS {col}"))
         if c.execute(text(f"SELECT COUNT(*) FROM {S}.insegnamenti")).scalar():
             c.execute(text(f"""INSERT INTO {S}.insegnamenti (nome, docente, email, ore)
                 VALUES ('Legislazione scolastica', '', '', 25) ON CONFLICT (nome) DO NOTHING"""))
@@ -482,10 +487,163 @@ def pag_tesi():
                     c2.download_button("Scarica", bytes(r["contenuto"]), file_name=r["nome_file"], mime=r["mime"], key=f"d{d['id']}")
 
 
+SEDE_TFA = "Link Campus University, Via Pietro De Francisci 152, Roma"
+SYSTEM_VIAGGI = """Sei un assistente per i viaggi di corsisti pendolari verso le lezioni del TFA o la scuola di tirocinio.
+Scrivi in italiano, in modo pratico e sintetico. Usa la ricerca web per verificare treni (Trenitalia, Italo, regionali),
+collegamenti urbani (metro, bus) e tempi in auto per la data indicata. Per ogni opzione indica: orario di partenza da casa,
+tratte con orari e numero del treno quando disponibili, cambi, tempo totale, arrivo a destinazione e rientro.
+Distingui ciò che hai verificato da ciò che è una stima. Segnala scioperi o lavori sulla linea se li trovi.
+Non inventare numeri di treno o orari: se non li trovi, scrivi che vanno verificati sul sito del vettore.
+Formatta con titoli «## Opzione 1 – …» e chiudi con «## Da verificare» (biglietti, prezzi, variazioni)."""
+
+
+def maps_link(origine, destinazione, modo):
+    from urllib.parse import quote_plus
+    return (f"https://www.google.com/maps/dir/?api=1&origin={quote_plus(origine)}"
+            f"&destination={quote_plus(destinazione)}&travelmode={modo}")
+
+
 def pag_viaggi():
     st.title("I miei viaggi")
-    st.caption("Annota tratte, orari e opzioni. Verifica sempre su trenitalia.com e italotreno.it.")
-    editor(personale("viaggi"), "via", lambda d: salva_personale("viaggi", d))
+    st.caption("Imposta partenza e destinazione: apri subito il percorso su Google Maps oppure genera un itinerario "
+               "completo con orari verificati sul web. Controlla sempre su trenitalia.com e italotreno.it prima di partire.")
+    prof = q(f"SELECT citta_partenza, scuola_tirocinio FROM {S}.utenti WHERE id=:u", u=uid()).iloc[0]
+    lez = lezioni_gruppo()
+    prossime = sorted(set(lez[lez["data"] >= OGGI]["data"]))
+    with st.form("itin"):
+        c1, c2 = st.columns(2)
+        partenza = c1.text_input("Partenza (indirizzo, città o stazione)", value=prof["citta_partenza"] or "")
+        dest_opt = ["Sede TFA – " + SEDE_TFA]
+        if prof["scuola_tirocinio"]:
+            dest_opt.append("Scuola del tirocinio – " + prof["scuola_tirocinio"])
+        dest_opt.append("Altra destinazione")
+        dsel = c2.selectbox("Destinazione", dest_opt)
+        altra = c2.text_input("Se «Altra destinazione», scrivi l'indirizzo")
+        c3, c4, c5 = st.columns(3)
+        data = c3.date_input("Giorno", value=prossime[0] if prossime else OGGI, format="DD/MM/YYYY")
+        arrivo = c4.time_input("Arrivare entro", value=datetime.strptime("08:15", "%H:%M").time())
+        rientro = c5.time_input("Ripartire dopo", value=datetime.strptime("19:30", "%H:%M").time())
+        mezzo = st.radio("Mezzo", ["Treno e mezzi pubblici", "Auto", "Auto fino alla stazione + treno", "Confronta tutto"], horizontal=True)
+        ricorda = st.checkbox("Ricorda la partenza nel mio profilo", value=not prof["citta_partenza"])
+        c6, c7 = st.columns(2)
+        apri = c6.form_submit_button("Mostra percorsi su Google Maps")
+        genera = c7.form_submit_button("Genera itinerario dettagliato", type="primary")
+
+    destinazione = altra.strip() if dsel == "Altra destinazione" else dsel.split(" – ", 1)[1]
+    if (apri or genera) and (not partenza.strip() or not destinazione):
+        st.error("Indica partenza e destinazione."); return
+    if (apri or genera) and ricorda:
+        run(f"UPDATE {S}.utenti SET citta_partenza=:p WHERE id=:u", p=partenza.strip(), u=uid())
+    if apri or genera:
+        st.markdown(f"[Percorso con mezzi pubblici]({maps_link(partenza, destinazione, 'transit')}) · "
+                    f"[Percorso in auto]({maps_link(partenza, destinazione, 'driving')})")
+    if genera:
+        cfg = st.secrets.get("ai", {})
+        if not cfg.get("api_key"):
+            st.warning("Generazione non attiva: manca la chiave API nei Secrets.")
+        elif not controlla_limiti("L'itinerario conta come una generazione."):
+            giorno = ["lunedì", "martedì", "mercoledì", "giovedì", "venerdì", "sabato", "domenica"][data.weekday()]
+            prompt = (f"Prepara l'itinerario per {giorno} {data:%d/%m/%Y}.\nPartenza: {partenza}\nDestinazione: {destinazione}\n"
+                      f"Devo arrivare entro le {arrivo:%H:%M} e ripartire dopo le {rientro:%H:%M} per tornare a casa in giornata.\n"
+                      f"Mezzo: {mezzo}. Proponi al massimo 3 opzioni, dalla più consigliata.")
+            with st.container(border=True):
+                testo = st.write_stream(genera_stream(prompt, 3000, system=SYSTEM_VIAGGI, web=True))
+            registra_generazione("Itinerario", prompt, testo)
+            run(f"""INSERT INTO {S}.viaggi (utente_id, opzione, andata, ritorno, data, partenza, destinazione, mezzo, dettaglio)
+                    VALUES (:u, :o, :a, :r, :d, :p, :de, :m, :t)""", u=uid(), o=f"{data:%d/%m} · {mezzo}",
+                a=f"arrivo entro {arrivo:%H:%M}", r=f"ripartenza dopo {rientro:%H:%M}", d=data, p=partenza, de=destinazione, m=mezzo, t=testo)
+            st.toast("Itinerario salvato in «I miei itinerari».")
+
+    st.subheader("I miei itinerari")
+    v = q(f"SELECT id, data, partenza, destinazione, mezzo, dettaglio, opzione, andata, ritorno FROM {S}.viaggi WHERE utente_id=:u ORDER BY data DESC NULLS LAST, id DESC", u=uid())
+    if v.empty:
+        st.info("Nessun itinerario salvato.")
+    for _, r in v.iterrows():
+        titolo = (f"{pd.Timestamp(r['data']):%d/%m/%Y} · {r['partenza']} → {r['destinazione']} · {r['mezzo']}"
+                  if pd.notna(r["data"]) else r["opzione"])
+        with st.expander(titolo):
+            st.markdown(r["dettaglio"] or f"Andata: {r['andata']}  \nRitorno: {r['ritorno']}")
+            if st.button("Elimina", key=f"vdel{r['id']}"):
+                run(f"DELETE FROM {S}.viaggi WHERE id=:i AND utente_id=:u", i=int(r["id"]), u=uid())
+                st.rerun()
+
+
+SYSTEM_SOGGIORNO = """Sei un assistente che aiuta corsisti pendolari a trovare dove dormire vicino alla sede delle lezioni
+o alla scuola di tirocinio. Scrivi in italiano, in modo pratico. Usa la ricerca web per trovare strutture reali e aperte
+(hotel, B&B, case per ferie e strutture religiose, ostelli, appartamenti) e confrontale per: distanza a piedi o in metro
+dalla destinazione, prezzo indicativo per notte nelle date indicate, colazione, cancellazione gratuita, orari di check-in
+compatibili con un arrivo serale dopo le lezioni. Indica per ognuna dove prenotare (sito ufficiale o portale).
+Non inventare nomi, indirizzi o prezzi: se un dato non è verificabile scrivi «da verificare».
+Formatta con «## Le mie proposte» (massimo 5 strutture, dalla più conveniente rispetto al budget), poi
+«## Zone consigliate» e «## Consigli pratici» (convenzioni universitarie, alternative per chi viaggia in gruppo)."""
+
+
+def pag_soggiorno():
+    from datetime import timedelta
+    from urllib.parse import quote_plus
+    st.title("Soggiorno")
+    st.caption("Cerca dove dormire per il weekend di lezione o i giorni di tirocinio. I link ai portali sono gratuiti; "
+               "la ricerca guidata usa il web e conta come una generazione. Prezzi e disponibilità vanno sempre confermati sul portale.")
+    prof = q(f"SELECT scuola_tirocinio FROM {S}.utenti WHERE id=:u", u=uid()).iloc[0]
+    lez = lezioni_gruppo()
+    sabati = [d for d in sorted(set(lez[lez["data"] >= OGGI]["data"])) if d.weekday() == 5]
+    ci_def = sabati[0] if sabati else OGGI
+    with st.form("sogg"):
+        c1, c2 = st.columns(2)
+        opz = ["Sede TFA – " + SEDE_TFA] + (["Scuola del tirocinio – " + prof["scuola_tirocinio"]] if prof["scuola_tirocinio"] else []) + ["Altro luogo"]
+        dsel = c1.selectbox("Vicino a", opz)
+        altro = c1.text_input("Se «Altro luogo», scrivi l'indirizzo")
+        checkin = c2.date_input("Arrivo (check-in)", value=ci_def, format="DD/MM/YYYY")
+        checkout = c2.date_input("Partenza (check-out)", value=ci_def + timedelta(days=1), format="DD/MM/YYYY")
+        c3, c4, c5 = st.columns(3)
+        persone = c3.number_input("Persone", 1, 6, 1)
+        budget = c4.number_input("Budget massimo a notte (€)", 20, 500, 90, step=10)
+        distanza = c5.selectbox("Distanza massima", ["15 min a piedi", "30 min con i mezzi", "Indifferente"])
+        tipi = st.multiselect("Tipologie", ["Hotel", "B&B", "Casa per ferie / struttura religiosa", "Ostello", "Appartamento"],
+                              default=["Hotel", "B&B", "Casa per ferie / struttura religiosa"])
+        note = st.text_input("Esigenze particolari (facoltativo)", placeholder="es. parcheggio, camera singola, arrivo dopo le 20")
+        c6, c7 = st.columns(2)
+        link = c6.form_submit_button("Apri le ricerche sui portali")
+        cerca = c7.form_submit_button("Trova soluzioni con le date", type="primary")
+
+    luogo = altro.strip() if dsel == "Altro luogo" else dsel.split(" – ", 1)[1]
+    if (link or cerca) and (not luogo or checkout <= checkin):
+        st.error("Indica il luogo e una data di partenza successiva a quella di arrivo."); return
+    if link or cerca:
+        zona = luogo.split(",")[-1].strip() if "," in luogo else luogo
+        st.markdown(
+            f"[Booking.com](https://www.booking.com/searchresults.it.html?ss={quote_plus(luogo)}&checkin={checkin:%Y-%m-%d}"
+            f"&checkout={checkout:%Y-%m-%d}&group_adults={persone}&no_rooms=1) · "
+            f"[Airbnb](https://www.airbnb.it/s/{quote_plus(zona)}/homes?checkin={checkin:%Y-%m-%d}&checkout={checkout:%Y-%m-%d}&adults={persone}) · "
+            f"[Strutture vicine su Google Maps](https://www.google.com/maps/search/{quote_plus('alloggi vicino ' + luogo)})")
+    if cerca:
+        cfg = st.secrets.get("ai", {})
+        if not cfg.get("api_key"):
+            st.warning("Ricerca guidata non attiva: manca la chiave API nei Secrets.")
+        elif not controlla_limiti("La ricerca conta come una generazione."):
+            notti = (checkout - checkin).days
+            prompt = (f"Cerco dove dormire vicino a: {luogo}.\nArrivo {checkin:%d/%m/%Y}, partenza {checkout:%d/%m/%Y} ({notti} notti), "
+                      f"{persone} persone.\nBudget massimo {budget} € a notte. Distanza massima: {distanza}.\n"
+                      f"Tipologie gradite: {', '.join(tipi) or 'qualsiasi'}.\nEsigenze: {note or 'nessuna'}.\n"
+                      f"Il giorno di arrivo ho lezione fino alle 19:30, il giorno dopo ricomincio alle 08:30.")
+            with st.container(border=True):
+                testo = st.write_stream(genera_stream(prompt, 3500, system=SYSTEM_SOGGIORNO, web=True))
+            registra_generazione("Soggiorno", prompt, testo)
+            run(f"""INSERT INTO {S}.soggiorni (utente_id, checkin, checkout, vicino_a, persone, budget, tipologie, dettaglio)
+                    VALUES (:u,:ci,:co,:v,:p,:b,:t,:d)""", u=uid(), ci=checkin, co=checkout, v=luogo, p=int(persone),
+                b=int(budget), t=", ".join(tipi), d=testo)
+            st.toast("Ricerca salvata in «Le mie ricerche».")
+
+    st.subheader("Le mie ricerche")
+    sg = q(f"SELECT * FROM {S}.soggiorni WHERE utente_id=:u ORDER BY checkin DESC, id DESC", u=uid())
+    if sg.empty:
+        st.info("Nessuna ricerca salvata.")
+    for _, r in sg.iterrows():
+        with st.expander(f"{pd.Timestamp(r['checkin']):%d/%m} → {pd.Timestamp(r['checkout']):%d/%m/%Y} · vicino a {r['vicino_a']} · max {r['budget']} €"):
+            st.markdown(r["dettaglio"])
+            if st.button("Elimina", key=f"sdel{r['id']}"):
+                run(f"DELETE FROM {S}.soggiorni WHERE id=:i AND utente_id=:u", i=int(r["id"]), u=uid())
+                st.rerun()
 
 
 def pag_profilo():
@@ -496,7 +654,8 @@ def pag_profilo():
         v = {k: (c1 if i % 2 == 0 else c2).text_input(lab, value=u[k] or "") for i, (k, lab) in enumerate([
             ("nome", "Nome"), ("cognome", "Cognome"), ("matricola", "Matricola"), ("email", "Email"),
             ("email_istituzionale", "Email istituzionale"), ("telefono", "Telefono"), ("indirizzo", "Indirizzo"),
-            ("scuola_tirocinio", "Scuola del tirocinio diretto"), ("tutor_scolastico", "Tutor scolastico")])}
+            ("scuola_tirocinio", "Scuola del tirocinio diretto"), ("tutor_scolastico", "Tutor scolastico"),
+            ("citta_partenza", "Luogo di partenza per i viaggi")])}
         v["gruppo"] = st.selectbox("Gruppo", GRUPPI, index=GRUPPI.index(u["gruppo"]) if u["gruppo"] in GRUPPI else 2)
         if st.form_submit_button("Salva profilo", type="primary"):
             run(f"UPDATE {S}.utenti SET " + ", ".join(f"{k}=:{k}" for k in v) + " WHERE id=:u", u=uid(), **v)
@@ -521,7 +680,7 @@ def pag_profilo():
             buf = io.BytesIO()
             with zipfile.ZipFile(buf, "w") as z:
                 z.writestr("profilo.json", u.drop("pwd_hash").to_json(force_ascii=False, date_format="iso"))
-                for t in ["asincrone", "assenze", "tirocinio", "viaggi", "tesi", "generazioni"]:
+                for t in ["asincrone", "assenze", "tirocinio", "viaggi", "soggiorni", "tesi", "generazioni"]:
                     z.writestr(f"{t}.csv", personale(t).to_csv(index=False))
                 for _, d in q(f"SELECT id, COALESCE(area,'Altro') AS area, categoria, nome_file, versione, contenuto FROM {S}.documenti WHERE utente_id=:u", u=uid()).iterrows():
                     cartella = re.sub(r'[\\/:*?"<>|]', "-", d["area"])[:80]
@@ -626,7 +785,7 @@ def estrai_testo(doc_id: int, limite: int = 60000) -> str:
     return t[:limite]
 
 
-def genera_stream(prompt: str, max_tokens: int):
+def genera_stream(prompt: str, max_tokens: int, system: str = None, web: bool = False):
     cfg = st.secrets.get("ai", {})
     if cfg.get("api_key") == "demo":
         demo = ("## Bozza dimostrativa\n\nQuesta è una risposta di prova: la modalità «demo» non chiama il modello. "
@@ -637,8 +796,9 @@ def genera_stream(prompt: str, max_tokens: int):
         return
     import anthropic
     client = anthropic.Anthropic(api_key=cfg["api_key"])
+    extra = {"tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 5}]} if web else {}
     with client.messages.stream(model=cfg.get("model", "claude-sonnet-5-5"), max_tokens=max_tokens,
-                                system=SYSTEM_AI, messages=[{"role": "user", "content": prompt}]) as s:
+                                system=system or SYSTEM_AI, messages=[{"role": "user", "content": prompt}], **extra) as s:
         for t in s.text_stream:
             yield t
         u = s.get_final_message().usage
@@ -665,27 +825,38 @@ def docx_da_testo(titolo: str, testo: str) -> bytes:
     return buf.getvalue()
 
 
+def controlla_limiti(premessa: str = "") -> bool:
+    """Mostra i contatori e restituisce True se il corsista ha esaurito i limiti (l'amministratore non ne ha)."""
+    cfg = st.secrets.get("ai", {})
+    uso = q(f"""SELECT COUNT(*) FILTER (WHERE creato_il >= date_trunc('day', now() AT TIME ZONE 'Europe/Rome') AT TIME ZONE 'Europe/Rome') AS oggi,
+                       COUNT(*) FILTER (WHERE creato_il >= date_trunc('month', now() AT TIME ZONE 'Europe/Rome') AT TIME ZONE 'Europe/Rome') AS mese
+                FROM {S}.generazioni WHERE utente_id=:u""", u=uid()).iloc[0]
+    if me().get("ruolo") == "admin":
+        st.caption(f"{premessa} Amministratore: nessun limite (questo mese {int(uso['mese'])}).")
+        return False
+    lim_g = int(cfg.get("limite_giornaliero", 10))
+    lim_pers = q(f"SELECT limite_mensile FROM {S}.utenti WHERE id=:u", u=uid())["limite_mensile"].iloc[0]
+    lim_m = int(lim_pers) if pd.notna(lim_pers) else int(cfg.get("limite_mensile", 60))
+    bloccato = bool(uso["oggi"] >= lim_g or uso["mese"] >= lim_m)
+    st.caption(f"{premessa} Oggi {int(uso['oggi'])}/{lim_g} · questo mese {int(uso['mese'])}/{lim_m} generazioni.")
+    if bloccato:
+        st.warning("Hai raggiunto il limite di generazioni: riprova domani o il mese prossimo, oppure chiedi all'amministratore di aumentarlo.")
+    return bloccato
+
+
+def registra_generazione(tipo, richiesta, testo):
+    tin, tout = st.session_state.get("_uso", (0, 0))
+    run(f"""INSERT INTO {S}.generazioni (utente_id,tipo,richiesta,testo,caratteri,token_in,token_out)
+            VALUES (:u,:t,:r,:x,:c,:i,:o)""", u=uid(), t=tipo, r=richiesta[:4000], x=testo, c=len(testo), i=tin, o=tout)
+
+
 def pag_genera():
     st.title("Genera testi")
     cfg = st.secrets.get("ai", {})
     if not cfg.get("api_key"):
         st.warning("Generazione non attiva: l'amministratore deve inserire la chiave API nella sezione [ai] dei Secrets.")
         return
-    uso = q(f"""SELECT COUNT(*) FILTER (WHERE creato_il >= date_trunc('day', now() AT TIME ZONE 'Europe/Rome') AT TIME ZONE 'Europe/Rome') AS oggi,
-                       COUNT(*) FILTER (WHERE creato_il >= date_trunc('month', now() AT TIME ZONE 'Europe/Rome') AT TIME ZONE 'Europe/Rome') AS mese
-                FROM {S}.generazioni WHERE utente_id=:u""", u=uid()).iloc[0]
-    if me().get("ruolo") == "admin":
-        bloccato = False
-        st.caption(f"Le bozze vanno rilette e personalizzate: gli elaborati devono essere originali. Amministratore: nessun limite (questo mese {int(uso['mese'])}).")
-    else:
-        lim_g = int(cfg.get("limite_giornaliero", 10))
-        lim_pers = q(f"SELECT limite_mensile FROM {S}.utenti WHERE id=:u", u=uid())["limite_mensile"].iloc[0]
-        lim_m = int(lim_pers) if pd.notna(lim_pers) else int(cfg.get("limite_mensile", 60))
-        bloccato = uso["oggi"] >= lim_g or uso["mese"] >= lim_m
-        st.caption(f"Le bozze vanno rilette e personalizzate: gli elaborati devono essere originali. "
-                   f"Oggi {int(uso['oggi'])}/{lim_g} · questo mese {int(uso['mese'])}/{lim_m} generazioni.")
-        if bloccato:
-            st.warning("Hai raggiunto il limite di generazioni: riprova domani o il mese prossimo, oppure chiedi all'amministratore di aumentarlo.")
+    bloccato = controlla_limiti("Le bozze vanno rilette e personalizzate: gli elaborati devono essere originali.")
     ins = q(f"SELECT nome FROM {S}.insegnamenti ORDER BY nome")["nome"].tolist()
     docs = q(f"SELECT id, nome_file, versione, categoria FROM {S}.documenti WHERE utente_id=:u ORDER BY caricato_il DESC", u=uid())
 
@@ -765,7 +936,7 @@ if not accesso():
 
 PAGINE = {"Cruscotto": pag_cruscotto, "Calendario": pag_calendario, "Asincrone": pag_asincrone,
           "Assenze e recuperi": pag_assenze, "Tirocinio": pag_tirocinio, "Documenti": pag_documenti,
-          "Relazione finale": pag_tesi, "Genera testi": pag_genera, "Viaggi": pag_viaggi, "Profilo": pag_profilo}
+          "Relazione finale": pag_tesi, "Genera testi": pag_genera, "Viaggi": pag_viaggi, "Soggiorno": pag_soggiorno, "Profilo": pag_profilo}
 if me().get("ruolo") == "admin":
     PAGINE["Amministrazione"] = pag_admin
 with st.sidebar:
