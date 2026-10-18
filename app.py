@@ -594,6 +594,30 @@ def leggi_zip(dati: bytes):
     return pd.DataFrame(righe), contenuti
 
 
+def scarica_dropbox(link: str, limite_mb: int = 400) -> bytes:
+    """Scarica come zip una cartella condivisa di Dropbox (link pubblico), lato server."""
+    import re as _re, urllib.request
+    if "dropbox.com" not in link:
+        raise ValueError("serve un link di Dropbox (dropbox.com/…)")
+    url = _re.sub(r"([?&])dl=0", r"\1dl=1", link)
+    if "dl=1" not in url:
+        url += ("&" if "?" in url else "?") + "dl=1"
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 TFA-Manager"})
+    buf = io.BytesIO()
+    with urllib.request.urlopen(req, timeout=600) as r:
+        while True:
+            pezzo = r.read(1 << 20)
+            if not pezzo:
+                break
+            buf.write(pezzo)
+            if buf.tell() > limite_mb * 1e6:
+                raise ValueError(f"la cartella supera {limite_mb} MB: dividila in più link")
+    dati = buf.getvalue()
+    if not dati.startswith(b"PK"):
+        raise ValueError("Dropbox non ha restituito uno zip: controlla che il link sia «chiunque abbia il link» e punti a una cartella")
+    return dati
+
+
 def salva_materiale(gruppo, area, sotto, nome, mime, b, note=""):
     import hashlib
     h = hashlib.sha1(b).hexdigest()
@@ -623,14 +647,30 @@ def pag_materiali():
                         "correggere tutto nella tabella. **Escludi sempre documenti personali ed elaborati.**")
             gdest = st.selectbox("Gruppo di destinazione", ([gruppo, "Tutti"] if me().get("ruolo") != "admin" else GRUPPI + ["Tutti"]),
                                  index=0 if me().get("ruolo") != "admin" else GRUPPI.index(gruppo), key="imp_gr")
-            z = st.file_uploader("File .zip", type=["zip"], key="imp_zip")
-            if z is not None:
-                if st.session_state.get("imp_nome") != z.name:
+            fonte = st.radio("Da dove prendo i file?", ["Link di una cartella Dropbox (consigliato)", "Carico uno zip dal computer"],
+                             horizontal=True, key="imp_fonte")
+            if fonte.startswith("Link"):
+                st.caption("Su Dropbox: tasto destro sulla cartella → Condividi → Copia link (chiunque abbia il link può visualizzare). "
+                           "L’app scarica la cartella direttamente da Dropbox, senza passare dal tuo computer. "
+                           "Finita l’importazione puoi eliminare il link da Dropbox.")
+                link = st.text_input("Link della cartella Dropbox", key="imp_link", placeholder="https://www.dropbox.com/scl/fo/…")
+                if st.button("Scarica da Dropbox", key="imp_scarica") and link.strip():
+                    try:
+                        with st.spinner("Scarico la cartella da Dropbox…"):
+                            dati = scarica_dropbox(link.strip())
+                        df, cont = leggi_zip(dati)
+                        st.session_state.update(imp_nome=link.strip(), imp_df=df, imp_cont=cont)
+                    except Exception as e:
+                        st.error(f"Download non riuscito: {e}")
+            else:
+                z = st.file_uploader("File .zip", type=["zip"], key="imp_zip")
+                if z is not None and st.session_state.get("imp_nome") != z.name:
                     try:
                         df, cont = leggi_zip(z.getvalue())
                     except zipfile.BadZipFile:
                         st.error("Il file non è uno zip valido."); df, cont = pd.DataFrame(), {}
                     st.session_state.update(imp_nome=z.name, imp_df=df, imp_cont=cont)
+            if st.session_state.get("imp_nome"):
                 df = st.session_state.get("imp_df", pd.DataFrame())
                 if not df.empty:
                     tutte = [a for v in AREE_MATERIALI.values() for a in v]
