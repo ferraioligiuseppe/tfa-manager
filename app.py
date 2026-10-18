@@ -152,6 +152,7 @@ def init_db():
         c.execute(text(f"ALTER TABLE {S}.documenti ADD COLUMN IF NOT EXISTS area TEXT"))
         c.execute(text(f"ALTER TABLE {S}.utenti ADD COLUMN IF NOT EXISTS limite_mensile INT"))
         c.execute(text(f"ALTER TABLE {S}.utenti ADD COLUMN IF NOT EXISTS citta_partenza TEXT"))
+        c.execute(text(f"ALTER TABLE {S}.utenti ADD COLUMN IF NOT EXISTS pwd_temporanea BOOLEAN DEFAULT FALSE"))
         for col in ("data DATE", "partenza TEXT", "destinazione TEXT", "mezzo TEXT", "dettaglio TEXT", "creato_il TIMESTAMPTZ DEFAULT now()"):
             c.execute(text(f"ALTER TABLE {S}.viaggi ADD COLUMN IF NOT EXISTS {col}"))
         if c.execute(text(f"SELECT COUNT(*) FROM {S}.insegnamenti")).scalar():
@@ -260,6 +261,7 @@ def accesso():
                     run(f"UPDATE {S}.utenti SET ultimo_accesso=now(), ruolo=:r WHERE id=:u", u=int(user["id"]), r=user["ruolo"])
                     user["id"] = int(user["id"])
                     st.session_state["user"] = user
+                    st.session_state["cambia_pwd"] = bool(user.get("pwd_temporanea"))
                     st.rerun()
     with t_reg:
         with st.form("reg"):
@@ -756,6 +758,24 @@ def pag_admin():
                     a=bool(r["attivo"]), g=r["gruppo"], l=lim, i=int(r["id"]))
             else:
                 st.toast("Iscritti aggiornati.")
+        st.markdown("**Reimposta la password di un iscritto**")
+        altri = ut[ut["id"] != uid()]
+        if altri.empty:
+            st.caption("Nessun altro iscritto.")
+        else:
+            c1, c2 = st.columns([2, 1])
+            chi = c1.selectbox("Iscritto", altri["id"].tolist(), key="reset_chi",
+                               format_func=lambda i: (lambda r: f"{r['cognome']} {r['nome']} ({r['username']})")(altri.set_index("id").loc[i]))
+            if c2.button("Reimposta password"):
+                nuova = password_provvisoria()
+                run(f"UPDATE {S}.utenti SET pwd_hash=:h, pwd_temporanea=TRUE WHERE id=:i",
+                    h=bcrypt.hashpw(nuova.encode(), bcrypt.gensalt()).decode(), i=int(chi))
+                st.session_state["ultima_reset"] = (altri.set_index("id").loc[chi, "username"], nuova)
+            if st.session_state.get("ultima_reset"):
+                un, pw = st.session_state["ultima_reset"]
+                st.success(f"Password provvisoria per **{un}**: comunicala di persona o per messaggio. "
+                           "Al primo accesso dovrà sceglierne una nuova.")
+                st.code(pw, language=None)
         st.caption("Unico amministratore: l'utente indicato in admin_username nei Secrets. Il ruolo non si modifica da qui.")
         st.caption(f"Codice di invito attuale: impostato nei Secrets di Streamlit ({'presente' if st.secrets.get('codice_invito') else 'MANCANTE'}).")
     with t2:
@@ -1030,6 +1050,29 @@ def credito():
     return f"TFA Manager · ideato e realizzato da **{firma}** – {titoli} · [www.pnev.it](https://www.pnev.it/)"
 
 
+def cambio_obbligatorio():
+    """Dopo un reset dell'amministratore l'utente deve scegliere una nuova password prima di continuare."""
+    st.title("Scegli una nuova password")
+    st.info("Stai usando una password provvisoria: scegline una personale per continuare.")
+    with st.form("pw_obbl"):
+        n1 = st.text_input("Nuova password (almeno 8 caratteri)", type="password")
+        n2 = st.text_input("Ripeti la nuova password", type="password")
+        if st.form_submit_button("Salva e continua", type="primary"):
+            if len(n1) < 8 or n1 != n2:
+                st.error("Le password non coincidono o sono troppo corte.")
+            else:
+                run(f"UPDATE {S}.utenti SET pwd_hash=:h, pwd_temporanea=FALSE WHERE id=:u",
+                    h=bcrypt.hashpw(n1.encode(), bcrypt.gensalt()).decode(), u=uid())
+                st.session_state["cambia_pwd"] = False
+                st.rerun()
+
+
+def password_provvisoria():
+    import secrets as _s
+    alfabeto = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789"
+    return "".join(_s.choice(alfabeto) for _ in range(10))
+
+
 # ================================================================ avvio
 try:
     init_db()
@@ -1039,6 +1082,9 @@ except Exception as e:
     st.stop()
 
 if not accesso():
+    st.stop()
+if st.session_state.get("cambia_pwd"):
+    cambio_obbligatorio()
     st.stop()
 
 PAGINE = {"Cruscotto": pag_cruscotto, "Calendario": pag_calendario, "Asincrone": pag_asincrone,
