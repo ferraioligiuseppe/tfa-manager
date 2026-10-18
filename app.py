@@ -175,8 +175,9 @@ def aggiungi_colonna(c, tabella, definizione):
 
 
 @st.cache_resource(show_spinner=False)
-def init_db():
-    """Eseguita una sola volta per avvio dell'app; il lock evita che due sessioni la eseguano insieme."""
+def init_db(versione: str = ""):
+    """Eseguita una volta per ogni versione dello schema; il lock evita che due sessioni la eseguano insieme.
+    Se il codice cambia (nuove tabelle o colonne), cambia la versione e la verifica riparte da sola."""
     with engine().begin() as c:
         c.execute(text("SELECT pg_advisory_xact_lock(724501)"))
         _init_db(c)
@@ -1520,7 +1521,8 @@ def password_provvisoria():
 
 # ================================================================ avvio
 try:
-    init_db()
+    import hashlib as _hl
+    init_db(_hl.md5((DDL + "|v4").encode()).hexdigest())
 except Exception as e:
     st.error(f"Connessione al database non riuscita: {e}")
     if "deadlock" in str(e).lower() or "lock" in str(e).lower():
