@@ -1,0 +1,833 @@
+{
+ "lezioni": [
+  {
+   "data": "2026-09-26",
+   "fascia": "08:30-11:00",
+   "insegnamento": "Psicologia dello sviluppo",
+   "esame": false
+  },
+  {
+   "data": "2026-09-26",
+   "fascia": "11:00-13:30",
+   "insegnamento": "Psicologia dello sviluppo",
+   "esame": false
+  },
+  {
+   "data": "2026-09-26",
+   "fascia": "14:30-17:00",
+   "insegnamento": "Modelli integrati",
+   "esame": false
+  },
+  {
+   "data": "2026-09-26",
+   "fascia": "17:00-19:30",
+   "insegnamento": "Modelli integrati",
+   "esame": false
+  },
+  {
+   "data": "2026-09-27",
+   "fascia": "08:30-11:00",
+   "insegnamento": "Didattica metacognitiva",
+   "esame": false
+  },
+  {
+   "data": "2026-09-27",
+   "fascia": "11:00-13:30",
+   "insegnamento": "Didattica metacognitiva",
+   "esame": false
+  },
+  {
+   "data": "2026-09-27",
+   "fascia": "14:30-17:00",
+   "insegnamento": "Tirocinio indiretto",
+   "esame": false
+  },
+  {
+   "data": "2026-09-27",
+   "fascia": "17:00-19:30",
+   "insegnamento": "Tirocinio indiretto",
+   "esame": false
+  },
+  {
+   "data": "2026-10-10",
+   "fascia": "08:30-11:00",
+   "insegnamento": "Modelli integrati",
+   "esame": false
+  },
+  {
+   "data": "2026-10-10",
+   "fascia": "11:00-13:30",
+   "insegnamento": "Modelli integrati",
+   "esame": false
+  },
+  {
+   "data": "2026-10-10",
+   "fascia": "14:30-17:00",
+   "insegnamento": "Pedagogia relazione d’aiuto",
+   "esame": false
+  },
+  {
+   "data": "2026-10-10",
+   "fascia": "17:00-19:30",
+   "insegnamento": "Pedagogia relazione d’aiuto",
+   "esame": false
+  },
+  {
+   "data": "2026-10-11",
+   "fascia": "08:30-11:00",
+   "insegnamento": "Didattica metacognitiva",
+   "esame": false
+  },
+  {
+   "data": "2026-10-11",
+   "fascia": "11:00-13:30",
+   "insegnamento": "Didattica metacognitiva",
+   "esame": false
+  },
+  {
+   "data": "2026-10-11",
+   "fascia": "14:30-17:00",
+   "insegnamento": "Ped. speciale gestione gruppo classe",
+   "esame": false
+  },
+  {
+   "data": "2026-10-11",
+   "fascia": "17:00-19:30",
+   "insegnamento": "Ped. speciale gestione gruppo classe",
+   "esame": false
+  },
+  {
+   "data": "2026-10-17",
+   "fascia": "08:30-11:00",
+   "insegnamento": "Ped. e Did. disabilità intellettiva",
+   "esame": false
+  },
+  {
+   "data": "2026-10-17",
+   "fascia": "11:00-13:30",
+   "insegnamento": "Ped. e Did. disabilità intellettiva",
+   "esame": false
+  },
+  {
+   "data": "2026-10-17",
+   "fascia": "14:30-17:00",
+   "insegnamento": "Did. disabilità sensoriali",
+   "esame": false
+  },
+  {
+   "data": "2026-10-17",
+   "fascia": "17:00-19:30",
+   "insegnamento": "Did. disabilità sensoriali",
+   "esame": false
+  },
+  {
+   "data": "2026-10-18",
+   "fascia": "08:30-11:00",
+   "insegnamento": "Neuropsichiatria Infantile",
+   "esame": false
+  },
+  {
+   "data": "2026-10-18",
+   "fascia": "11:00-13:30",
+   "insegnamento": "Neuropsichiatria Infantile",
+   "esame": false
+  },
+  {
+   "data": "2026-10-18",
+   "fascia": "14:30-17:00",
+   "insegnamento": "Didattica metacognitiva",
+   "esame": false
+  },
+  {
+   "data": "2026-10-18",
+   "fascia": "17:00-19:30",
+   "insegnamento": "Didattica metacognitiva",
+   "esame": false
+  },
+  {
+   "data": "2026-10-24",
+   "fascia": "08:30-11:00",
+   "insegnamento": "Did. disabilità sensoriali",
+   "esame": false
+  },
+  {
+   "data": "2026-10-24",
+   "fascia": "11:00-13:30",
+   "insegnamento": "Did. disabilità sensoriali",
+   "esame": false
+  },
+  {
+   "data": "2026-10-24",
+   "fascia": "14:30-17:00",
+   "insegnamento": "Ped. e Did. disabilità intellettiva",
+   "esame": false
+  },
+  {
+   "data": "2026-10-24",
+   "fascia": "17:00-19:30",
+   "insegnamento": "Ped. e Did. disabilità intellettiva",
+   "esame": false
+  },
+  {
+   "data": "2026-10-25",
+   "fascia": "08:30-11:00",
+   "insegnamento": "Ped. e Did. disabilità intellettiva",
+   "esame": false
+  },
+  {
+   "data": "2026-10-25",
+   "fascia": "11:00-13:30",
+   "insegnamento": "Ped. e Did. disabilità intellettiva",
+   "esame": false
+  },
+  {
+   "data": "2026-10-25",
+   "fascia": "14:30-17:00",
+   "insegnamento": "Didattica metacognitiva",
+   "esame": false
+  },
+  {
+   "data": "2026-10-25",
+   "fascia": "17:00-19:30",
+   "insegnamento": "Didattica metacognitiva",
+   "esame": false
+  },
+  {
+   "data": "2026-11-07",
+   "fascia": "08:30-11:00",
+   "insegnamento": "Progettazione PDF e PEI",
+   "esame": false
+  },
+  {
+   "data": "2026-11-07",
+   "fascia": "11:00-13:30",
+   "insegnamento": "Progettazione PDF e PEI",
+   "esame": false
+  },
+  {
+   "data": "2026-11-07",
+   "fascia": "14:30-17:00",
+   "insegnamento": "Progettazione PDF e PEI",
+   "esame": false
+  },
+  {
+   "data": "2026-11-07",
+   "fascia": "17:00-19:30",
+   "insegnamento": "Progettazione PDF e PEI",
+   "esame": false
+  },
+  {
+   "data": "2026-11-08",
+   "fascia": "08:30-11:00",
+   "insegnamento": "Progettazione PDF e PEI",
+   "esame": false
+  },
+  {
+   "data": "2026-11-08",
+   "fascia": "11:00-13:30",
+   "insegnamento": "Progettazione PDF e PEI",
+   "esame": false
+  },
+  {
+   "data": "2026-11-08",
+   "fascia": "14:30-17:00",
+   "insegnamento": "Progettazione PDF e PEI",
+   "esame": false
+  },
+  {
+   "data": "2026-11-08",
+   "fascia": "17:00-19:30",
+   "insegnamento": "Progettazione PDF e PEI",
+   "esame": false
+  },
+  {
+   "data": "2026-11-14",
+   "fascia": "08:30-11:00",
+   "insegnamento": "Modelli integrati",
+   "esame": false
+  },
+  {
+   "data": "2026-11-14",
+   "fascia": "11:00-13:30",
+   "insegnamento": "Modelli integrati",
+   "esame": false
+  },
+  {
+   "data": "2026-11-14",
+   "fascia": "14:30-17:00",
+   "insegnamento": "Didattica metacognitiva",
+   "esame": false
+  },
+  {
+   "data": "2026-11-14",
+   "fascia": "17:00-19:30",
+   "insegnamento": "Didattica metacognitiva",
+   "esame": true
+  },
+  {
+   "data": "2026-11-15",
+   "fascia": "08:30-11:00",
+   "insegnamento": "Ped. e Did. disabilità intellettiva",
+   "esame": false
+  },
+  {
+   "data": "2026-11-15",
+   "fascia": "11:00-13:30",
+   "insegnamento": "Ped. e Did. disabilità intellettiva",
+   "esame": false
+  },
+  {
+   "data": "2026-11-15",
+   "fascia": "14:30-17:00",
+   "insegnamento": "Tirocinio indiretto",
+   "esame": false
+  },
+  {
+   "data": "2026-11-15",
+   "fascia": "17:00-19:30",
+   "insegnamento": "Tirocinio indiretto",
+   "esame": false
+  },
+  {
+   "data": "2026-11-21",
+   "fascia": "08:30-11:00",
+   "insegnamento": "Neuropsichiatria Infantile",
+   "esame": false
+  },
+  {
+   "data": "2026-11-21",
+   "fascia": "11:00-13:30",
+   "insegnamento": "Neuropsichiatria Infantile",
+   "esame": false
+  },
+  {
+   "data": "2026-11-21",
+   "fascia": "14:30-17:00",
+   "insegnamento": "Modelli integrati",
+   "esame": false
+  },
+  {
+   "data": "2026-11-21",
+   "fascia": "17:00-19:30",
+   "insegnamento": "Modelli integrati",
+   "esame": false
+  },
+  {
+   "data": "2026-11-22",
+   "fascia": "08:30-11:00",
+   "insegnamento": "Did. disabilità sensoriali",
+   "esame": false
+  },
+  {
+   "data": "2026-11-22",
+   "fascia": "11:00-13:30",
+   "insegnamento": "Did. disabilità sensoriali",
+   "esame": false
+  },
+  {
+   "data": "2026-11-22",
+   "fascia": "14:30-17:00",
+   "insegnamento": "Did. disabilità sensoriali",
+   "esame": false
+  },
+  {
+   "data": "2026-11-22",
+   "fascia": "17:00-19:30",
+   "insegnamento": "Did. disabilità sensoriali",
+   "esame": false
+  },
+  {
+   "data": "2026-11-28",
+   "fascia": "08:30-11:00",
+   "insegnamento": "Neuropsichiatria Infantile",
+   "esame": false
+  },
+  {
+   "data": "2026-11-28",
+   "fascia": "11:00-13:30",
+   "insegnamento": "Neuropsichiatria Infantile",
+   "esame": false
+  },
+  {
+   "data": "2026-11-28",
+   "fascia": "14:30-17:00",
+   "insegnamento": "Psicologia dello sviluppo",
+   "esame": false
+  },
+  {
+   "data": "2026-11-28",
+   "fascia": "17:00-19:30",
+   "insegnamento": "Psicologia dello sviluppo",
+   "esame": false
+  },
+  {
+   "data": "2026-11-29",
+   "fascia": "08:30-11:00",
+   "insegnamento": "Tirocinio indiretto",
+   "esame": false
+  },
+  {
+   "data": "2026-11-29",
+   "fascia": "11:00-13:30",
+   "insegnamento": "Tirocinio indiretto",
+   "esame": false
+  },
+  {
+   "data": "2026-11-29",
+   "fascia": "14:30-17:00",
+   "insegnamento": "Tirocinio indiretto",
+   "esame": false
+  },
+  {
+   "data": "2026-11-29",
+   "fascia": "17:00-19:30",
+   "insegnamento": "Tirocinio indiretto",
+   "esame": false
+  },
+  {
+   "data": "2026-12-05",
+   "fascia": "08:30-11:00",
+   "insegnamento": "Neuropsichiatria Infantile",
+   "esame": false
+  },
+  {
+   "data": "2026-12-05",
+   "fascia": "11:00-13:30",
+   "insegnamento": "Neuropsichiatria Infantile",
+   "esame": false
+  },
+  {
+   "data": "2026-12-05",
+   "fascia": "14:30-17:00",
+   "insegnamento": "Ped. e Did. disabilità intellettiva",
+   "esame": false
+  },
+  {
+   "data": "2026-12-05",
+   "fascia": "17:00-19:30",
+   "insegnamento": "Ped. e Did. disabilità intellettiva",
+   "esame": true
+  },
+  {
+   "data": "2026-12-06",
+   "fascia": "08:30-11:00",
+   "insegnamento": "Da definire",
+   "esame": false
+  },
+  {
+   "data": "2026-12-06",
+   "fascia": "11:00-13:30",
+   "insegnamento": "Da definire",
+   "esame": false
+  },
+  {
+   "data": "2026-12-06",
+   "fascia": "14:30-17:00",
+   "insegnamento": "Da definire",
+   "esame": false
+  },
+  {
+   "data": "2026-12-06",
+   "fascia": "17:00-19:30",
+   "insegnamento": "Da definire",
+   "esame": false
+  },
+  {
+   "data": "2026-12-12",
+   "fascia": "08:30-11:00",
+   "insegnamento": "Psicologia dello sviluppo",
+   "esame": false
+  },
+  {
+   "data": "2026-12-12",
+   "fascia": "11:00-13:30",
+   "insegnamento": "Psicologia dello sviluppo",
+   "esame": false
+  },
+  {
+   "data": "2026-12-12",
+   "fascia": "14:30-17:00",
+   "insegnamento": "Psicologia dello sviluppo",
+   "esame": false
+  },
+  {
+   "data": "2026-12-12",
+   "fascia": "17:00-19:30",
+   "insegnamento": "Psicologia dello sviluppo",
+   "esame": false
+  },
+  {
+   "data": "2026-12-13",
+   "fascia": "08:30-11:00",
+   "insegnamento": "Modelli integrati",
+   "esame": false
+  },
+  {
+   "data": "2026-12-13",
+   "fascia": "11:00-13:30",
+   "insegnamento": "Modelli integrati",
+   "esame": true
+  },
+  {
+   "data": "2026-12-13",
+   "fascia": "14:30-17:00",
+   "insegnamento": "Ped. speciale gestione gruppo classe",
+   "esame": false
+  },
+  {
+   "data": "2026-12-13",
+   "fascia": "17:00-19:30",
+   "insegnamento": "Ped. speciale gestione gruppo classe",
+   "esame": false
+  },
+  {
+   "data": "2026-12-19",
+   "fascia": "08:30-11:00",
+   "insegnamento": "Progettazione PDF e PEI",
+   "esame": false
+  },
+  {
+   "data": "2026-12-19",
+   "fascia": "11:00-13:30",
+   "insegnamento": "Progettazione PDF e PEI",
+   "esame": true
+  },
+  {
+   "data": "2026-12-19",
+   "fascia": "14:30-17:00",
+   "insegnamento": "Neuropsichiatria Infantile",
+   "esame": false
+  },
+  {
+   "data": "2026-12-19",
+   "fascia": "17:00-19:30",
+   "insegnamento": "Neuropsichiatria Infantile",
+   "esame": true
+  },
+  {
+   "data": "2026-12-20",
+   "fascia": "08:30-11:00",
+   "insegnamento": "Ped. speciale gestione gruppo classe",
+   "esame": false
+  },
+  {
+   "data": "2026-12-20",
+   "fascia": "11:00-13:30",
+   "insegnamento": "Ped. speciale gestione gruppo classe",
+   "esame": false
+  },
+  {
+   "data": "2026-12-20",
+   "fascia": "14:30-17:00",
+   "insegnamento": "Ped. speciale gestione gruppo classe",
+   "esame": false
+  },
+  {
+   "data": "2026-12-20",
+   "fascia": "17:00-19:30",
+   "insegnamento": "Ped. speciale gestione gruppo classe",
+   "esame": false
+  },
+  {
+   "data": "2027-01-09",
+   "fascia": "08:30-11:00",
+   "insegnamento": "Tirocinio indiretto",
+   "esame": false
+  },
+  {
+   "data": "2027-01-09",
+   "fascia": "11:00-13:30",
+   "insegnamento": "Tirocinio indiretto",
+   "esame": false
+  },
+  {
+   "data": "2027-01-09",
+   "fascia": "14:30-17:00",
+   "insegnamento": "Psicologia dello sviluppo",
+   "esame": false
+  },
+  {
+   "data": "2027-01-09",
+   "fascia": "17:00-19:30",
+   "insegnamento": "Psicologia dello sviluppo",
+   "esame": true
+  },
+  {
+   "data": "2027-01-10",
+   "fascia": "08:30-11:00",
+   "insegnamento": "Ped. speciale gestione gruppo classe",
+   "esame": false
+  },
+  {
+   "data": "2027-01-10",
+   "fascia": "11:00-13:30",
+   "insegnamento": "Ped. speciale gestione gruppo classe",
+   "esame": true
+  },
+  {
+   "data": "2027-01-10",
+   "fascia": "14:30-17:00",
+   "insegnamento": "Da definire",
+   "esame": false
+  },
+  {
+   "data": "2027-01-10",
+   "fascia": "17:00-19:30",
+   "insegnamento": "Da definire",
+   "esame": false
+  },
+  {
+   "data": "2027-01-16",
+   "fascia": "08:30-11:00",
+   "insegnamento": "Da definire",
+   "esame": false
+  },
+  {
+   "data": "2027-01-16",
+   "fascia": "11:00-13:30",
+   "insegnamento": "Da definire",
+   "esame": false
+  },
+  {
+   "data": "2027-01-16",
+   "fascia": "14:30-17:00",
+   "insegnamento": "Da definire",
+   "esame": false
+  },
+  {
+   "data": "2027-01-16",
+   "fascia": "17:00-19:30",
+   "insegnamento": "Da definire",
+   "esame": false
+  },
+  {
+   "data": "2027-01-17",
+   "fascia": "08:30-11:00",
+   "insegnamento": "Pedagogia relazione d’aiuto",
+   "esame": true
+  },
+  {
+   "data": "2027-01-17",
+   "fascia": "11:00-13:30",
+   "insegnamento": "Da definire",
+   "esame": false
+  },
+  {
+   "data": "2027-01-17",
+   "fascia": "14:30-17:00",
+   "insegnamento": "Did. disabilità sensoriali",
+   "esame": false
+  },
+  {
+   "data": "2027-01-17",
+   "fascia": "17:00-19:30",
+   "insegnamento": "Did. disabilità sensoriali",
+   "esame": true
+  }
+ ],
+ "insegnamenti": [
+  {
+   "nome": "Psicologia dello sviluppo",
+   "docente": "Prof.ssa Giorgia Terrinoni",
+   "email": "",
+   "ore": 25
+  },
+  {
+   "nome": "Modelli integrati",
+   "docente": "Prof. Simone Federici",
+   "email": "",
+   "ore": 25
+  },
+  {
+   "nome": "Didattica metacognitiva",
+   "docente": "Prof.ssa Rosanna Moretti",
+   "email": "r.moretti@unilink.it",
+   "ore": 25
+  },
+  {
+   "nome": "Pedagogia relazione d’aiuto",
+   "docente": "Prof. Mancini",
+   "email": "",
+   "ore": 7.5
+  },
+  {
+   "nome": "Ped. speciale gestione gruppo classe",
+   "docente": "",
+   "email": "",
+   "ore": 25
+  },
+  {
+   "nome": "Ped. e Did. disabilità intellettiva",
+   "docente": "Prof. Fabio Simonetti",
+   "email": "",
+   "ore": 25
+  },
+  {
+   "nome": "Did. disabilità sensoriali",
+   "docente": "Prof.ssa Giovanna Rosaria Palmieri",
+   "email": "",
+   "ore": 25
+  },
+  {
+   "nome": "Neuropsichiatria Infantile",
+   "docente": "Prof.ssa Aurora Casillo",
+   "email": "a.casillo@unilink.it",
+   "ore": 25
+  },
+  {
+   "nome": "Progettazione PDF e PEI",
+   "docente": "",
+   "email": "",
+   "ore": 25
+  },
+  {
+   "nome": "Tirocinio indiretto",
+   "docente": "Prof.ssa Placida Brillantino",
+   "email": "p.brillantino@unilink.it",
+   "ore": 25
+  }
+ ],
+ "asincrone": [
+  {
+   "insegnamento": "Didattica metacognitiva",
+   "titolo": "Attività metacognitiva – amicizia",
+   "stato": "Da personalizzare"
+  },
+  {
+   "insegnamento": "Ped. e Did. disabilità intellettiva",
+   "titolo": "Prove moduli 1-4",
+   "stato": "Pronto"
+  },
+  {
+   "insegnamento": "Modelli integrati",
+   "titolo": "Rinforzo positivo",
+   "stato": "Pronto"
+  },
+  {
+   "insegnamento": "Neuropsichiatria Infantile",
+   "titolo": "Mod. 1 Autismo",
+   "stato": "Pronto"
+  },
+  {
+   "insegnamento": "Neuropsichiatria Infantile",
+   "titolo": "Mod. 2 ADHD",
+   "stato": "Pronto"
+  },
+  {
+   "insegnamento": "Neuropsichiatria Infantile",
+   "titolo": "Mod. 3 Disabilità intellettiva",
+   "stato": "Pronto"
+  },
+  {
+   "insegnamento": "Neuropsichiatria Infantile",
+   "titolo": "Mod. 4 DSA",
+   "stato": "Pronto"
+  },
+  {
+   "insegnamento": "Psicologia dello sviluppo",
+   "titolo": "Caso D.",
+   "stato": "Pronto"
+  },
+  {
+   "insegnamento": "Did. disabilità sensoriali",
+   "titolo": "Sordocecità",
+   "stato": "Pronto"
+  }
+ ],
+ "assenze": [
+  {
+   "data": "2026-09-26",
+   "insegnamento": "Psicologia dello sviluppo",
+   "ore": 5
+  },
+  {
+   "data": "2026-09-26",
+   "insegnamento": "Modelli integrati",
+   "ore": 5
+  },
+  {
+   "data": "2026-09-27",
+   "insegnamento": "Didattica metacognitiva",
+   "ore": 5
+  },
+  {
+   "data": "2026-09-27",
+   "insegnamento": "Tirocinio indiretto",
+   "ore": 5
+  }
+ ],
+ "seminari": [
+  {
+   "data": "2026-11-13",
+   "luogo": "Roma"
+  },
+  {
+   "data": "2026-12-11",
+   "luogo": "Novedrate"
+  },
+  {
+   "data": "2027-01-15",
+   "luogo": "Città di Castello"
+  },
+  {
+   "data": "2027-01-29",
+   "luogo": "Roma"
+  },
+  {
+   "data": "2027-02-12",
+   "luogo": "Napoli"
+  },
+  {
+   "data": "2027-03-12",
+   "luogo": "Novedrate"
+  },
+  {
+   "data": "2027-04-16",
+   "luogo": "Roma"
+  }
+ ],
+ "viaggi": [
+  {
+   "opzione": "Sabato: auto + Frecciarossa da Salerno",
+   "andata": "Pagani 04:45, Salerno FR 9608 alle 05:16, Roma Termini 06:50, metro A fino a Baldo degli Ubaldi",
+   "ritorno": "Uscita 19:30, Termini, FR serale per Salerno (circa 20:30)"
+  },
+  {
+   "opzione": "Domenica: auto + treno da Afragola",
+   "andata": "Il FR 9608 la domenica non circola: auto fino ad Afragola (35 min) e primo FR o Italo utile",
+   "ritorno": "Rientro ad Afragola e auto"
+  },
+  {
+   "opzione": "Tutta in auto",
+   "andata": "Partenza 05:15, A30/A1, circa 260 km, 2 h 45",
+   "ritorno": "Partenza 19:40, a casa verso le 22:30"
+  }
+ ],
+ "monte_ore": [
+  {
+   "voce": "Diretto: osservazione e UdA",
+   "tipo": "diretto",
+   "ore": 90
+  },
+  {
+   "voce": "Diretto: organi collegiali",
+   "tipo": "collegiali",
+   "ore": 30
+  },
+  {
+   "voce": "Diretto: documentazione del caso",
+   "tipo": "documentazione",
+   "ore": 30
+  },
+  {
+   "voce": "Registro 25 ore",
+   "tipo": "registro25",
+   "ore": 25
+  },
+  {
+   "voce": "Indiretto",
+   "tipo": "indiretto",
+   "ore": 50
+  }
+ ]
+}
