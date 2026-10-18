@@ -55,6 +55,25 @@ td.num{font-variant-numeric:tabular-nums;white-space:nowrap}
 #gate input{width:100%;font:inherit;padding:10px;margin:12px 0;border:1px solid var(--line);border-radius:4px;background:var(--paper);color:var(--ink)}
 #gate button{font:600 1.05rem "Barlow Condensed",sans-serif;background:var(--ink);color:var(--paper);border:0;border-radius:4px;padding:10px 18px;cursor:pointer}
 #err{color:var(--alert);min-height:1.4em;margin:8px 0 0}
+/* spot pnev.it */
+.spot{margin:28px 0 0;background:var(--surface);border:1px solid #C9CDF2;border-left:5px solid #3B4CCA;border-radius:6px;padding:16px 18px 12px;position:relative}
+.spot-brand{display:flex;align-items:center;gap:7px;font-size:.85rem;color:#4A4FA8}
+.spot-ring{width:15px;height:15px;border-radius:50%;background:radial-gradient(circle,var(--surface) 38%,transparent 40%),conic-gradient(#3B5BDB,#5F3DC4,#3B5BDB)}
+.spot-sl{display:none}.spot-sl.on{display:block;animation:spf .5s}
+@keyframes spf{from{opacity:0}to{opacity:1}}
+.spot-sl b{display:block;font-family:"Barlow Condensed",sans-serif;font-size:1.45rem;margin:6px 0 2px}
+.spot-sl p{margin:0 0 10px;max-width:62ch}
+.spot-sl a{display:inline-block;background:#3B4CCA;color:#fff;text-decoration:none;font-weight:600;padding:7px 13px;border-radius:5px}
+.spot-dots{display:flex;gap:6px;margin-top:10px}
+.spot-dots button{width:9px;height:9px;padding:0;border:0;border-radius:50%;background:#C9CDF2;cursor:pointer}
+.spot-dots button.on{background:#3B4CCA}
+.spot-firma{border-top:1px solid var(--line);margin-top:10px;padding-top:8px;font-size:.88rem;color:var(--muted)}
+.spot-firma strong{color:var(--ink)}
+#gate .spot{margin-top:18px;width:min(360px,100%)}
+#gate .spot-dots button{width:9px;height:9px;padding:0;border-radius:50%;background:#C9CDF2}
+#gate .spot-dots button.on{background:#3B4CCA}
+#gate{grid-auto-flow:row;align-content:center;justify-items:center}
+@media (prefers-reduced-motion:reduce){.spot-sl.on{animation:none}}
 [hidden]{display:none!important}
 @media (max-width:560px){.row{grid-template-columns:5.8rem 1fr;font-size:1.1rem}.row .tag{grid-column:2;justify-self:start}}
 </style>
@@ -68,6 +87,7 @@ td.num{font-variant-numeric:tabular-nums;white-space:nowrap}
     <button type="submit">Entra</button>
     <p id="err" role="alert"></p>
   </form>
+  <aside class="spot" data-spot aria-label="Da www.pnev.it"></aside>
 </div>
 
 <main id="app" hidden>
@@ -79,6 +99,8 @@ td.num{font-variant-numeric:tabular-nums;white-space:nowrap}
     <div id="bRows"></div>
     <div class="nav"><button id="prev">Weekend precedente</button><button id="next">Weekend successivo</button></div>
   </section>
+
+  <aside class="spot" data-spot aria-label="Da www.pnev.it"></aside>
 
   <h2>Esami in arrivo</h2>
   <div class="wrap"><table><thead><tr><th>Data</th><th>Insegnamento</th><th>Tra</th></tr></thead><tbody id="esami"></tbody></table></div>
@@ -151,6 +173,33 @@ function show() {
 
   $("trips").innerHTML = D.viaggi.map(v => `<div class="trip"><b>${v.opzione}</b>Andata: ${v.andata}<br>Ritorno: ${v.ritorno}</div>`).join("");
 }
+</script>
+<script>
+/* Spot pnev.it a rotazione – stessi messaggi dell'app; per cambiarli modifica SPOT qui sotto */
+const UTM = "?utm_source=tfa-pagina&utm_medium=web&utm_campaign=gruppo-c";
+const SPOT = [
+  {t:"PNEV Games a scuola", p:"Giochi digitali per allenare attenzione, memoria, funzioni esecutive e abilità visive. Pensati per LIM e tablet: portali nella tua classe.", b:"Scopri i giochi", l:"https://www.pnev.it/"},
+  {t:"Valutazioni per l’età evolutiva", p:"Valutazioni neuropsicologiche, degli apprendimenti e visuo-uditive allo Studio The Organism di Pagani, Sant’Agnello e Avellino.", b:"Prenota una valutazione", l:"https://www.pnev.it/"},
+  {t:"I video PNEV", p:"Riflessi primitivi, stimolazione visiva e uditiva spiegati passo passo: materiali per docenti e famiglie.", b:"Guarda i video", l:"https://www.pnev.it/"},
+  {t:"Screening gratuito per le scuole", p:"Screening degli apprendimenti gratuito per le scuole dell’Agro nocerino-sarnese. Contatti: WhatsApp 391 3598767.", b:"Richiedi lo screening", l:"https://www.pnev.it/"},
+  {t:"Giochiamo imparando", p:"Schede di pregrafismo e corsivo, interattive e stampabili, da usare in classe e a casa.", b:"Vai alle schede", l:"https://www.pnev.it/"}];
+const FIRMA = "Dott. Giuseppe Ferraioli", TITOLI = "Psicologo · Neuropsicologo · Optometrista comportamentale · Istruttore INPP, RMT e MNRI";
+const esc = s => s.replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const fermo = matchMedia("(prefers-reduced-motion: reduce)").matches;
+document.querySelectorAll("[data-spot]").forEach(box => {
+  box.innerHTML = `<div class="spot-brand"><span class="spot-ring"></span>www.pnev.it</div>` +
+    SPOT.map((s, i) => `<div class="spot-sl${i ? "" : " on"}"><b>${esc(s.t)}</b><p>${esc(s.p)}</p>
+      <a href="${esc(s.l + UTM)}" target="_blank" rel="noopener">${esc(s.b)}</a></div>`).join("") +
+    `<div class="spot-dots">${SPOT.map((s, i) => `<button class="${i ? "" : "on"}" aria-label="Messaggio ${i + 1}: ${esc(s.t)}"></button>`).join("")}</div>
+     <div class="spot-firma"><strong>${esc(FIRMA)}</strong> – ${esc(TITOLI)}</div>`;
+  const sl = [...box.querySelectorAll(".spot-sl")], dt = [...box.querySelectorAll(".spot-dots button")];
+  let k = 0, pausa = false;
+  const vai = n => { sl[k].classList.remove("on"); dt[k].classList.remove("on"); k = (n + sl.length) % sl.length; sl[k].classList.add("on"); dt[k].classList.add("on"); };
+  dt.forEach((d, i) => d.onclick = () => vai(i));
+  box.onmouseenter = box.onfocusin = () => pausa = true;
+  box.onmouseleave = box.onfocusout = () => pausa = false;
+  if (!fermo) setInterval(() => { if (!pausa && !document.hidden) vai(k + 1); }, 8000);
+});
 </script>
 </body>
 </html>
