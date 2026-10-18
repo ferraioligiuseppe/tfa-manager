@@ -325,7 +325,7 @@ def ripristina_sessione() -> bool:
         token = st.context.cookies.get(COOKIE)
     except Exception:
         token = None
-    if not token:
+    if not isinstance(token, str) or len(token) < 20:
         return False
     r = q(f"""SELECT u.* FROM {S}.sessioni s JOIN {S}.utenti u ON u.id = s.utente_id
               WHERE s.token_hash=:h AND s.scade > now() AND u.attivo""", h=_hash_token(token))
@@ -343,7 +343,7 @@ def esci():
             token = st.context.cookies.get(COOKIE)
         except Exception:
             token = None
-    if token:
+    if isinstance(token, str) and token:
         run(f"DELETE FROM {S}.sessioni WHERE token_hash=:h", h=_hash_token(token))
     st.session_state.clear()
     st.session_state["cancella_cookie"] = True
@@ -835,7 +835,16 @@ def pag_materiali():
     meta = q(f"""SELECT id, gruppo, area, categoria, nome_file, dimensione, note, caricato_il FROM {S}.materiali
                  WHERE gruppo = ANY(:g) ORDER BY nome_file""", g=gruppi_visibili)
     conteggi = meta.groupby("area").size().to_dict() if not meta.empty else {}
+    st.caption(f"Materiali presenti: {len(meta)} file · {meta['dimensione'].sum() / 1e6 if not meta.empty else 0:.1f} MB")
 
+    esito = st.session_state.pop("imp_esito", None)
+    if esito:
+        ed = pd.DataFrame(esito, columns=["File", "Cartella", "Sottocartella", "Esito"])
+        n_ok = int((ed["Esito"] == "salvato").sum()); n_err = int(ed["Esito"].str.startswith("errore").sum())
+        (st.error if n_err else st.success)(f"Importazione completata: {n_ok} file salvati, "
+                                            f"{int((ed['Esito'] == 'già presente').sum())} già presenti, {n_err} errori.")
+        with st.expander("Dettaglio dell’importazione", expanded=bool(n_err)):
+            st.dataframe(ed, hide_index=True, width="stretch")
     if editore:
         with st.expander("Importa una cartella intera (zip)"):
             st.markdown("Scarica da Dropbox la cartella dei materiali come **.zip** e caricala qui: l’app riconosce "
@@ -879,16 +888,22 @@ def pag_materiali():
                                                         "sottocartella": st.column_config.SelectboxColumn("Sottocartella", options=SOTTO_MATERIALI)})
                     sel = out[out["importa"]]
                     st.caption(f"{len(sel)} file selezionati su {len(out)} · {sel['MB'].sum():.1f} MB")
-                    if st.button(f"Importa {len(sel)} file nel Gruppo {gdest}", type="primary", disabled=sel.empty):
-                        cont, nuovi = st.session_state["imp_cont"], 0
-                        bar = st.progress(0.0)
+                    if st.button(f"Importa i file selezionati nel Gruppo {gdest}", type="primary", disabled=sel.empty, key="imp_ok"):
+                        cont, esiti = st.session_state["imp_cont"], []
+                        bar = st.progress(0.0, text="Inizio il salvataggio…")
                         for i, (_, r) in enumerate(sel.iterrows()):
+                            bar.progress(i / len(sel), text=f"Salvo {i + 1}/{len(sel)}: {r['file']}")
                             b, mime = cont[r["sha1"]]
-                            nuovi += salva_materiale(gdest, r["area"], r["sottocartella"], r["file"], mime, b, f"Importato da {r['percorso']}")
-                            bar.progress((i + 1) / len(sel))
-                        st.success(f"Importati {nuovi} file; {len(sel) - nuovi} erano già presenti.")
+                            try:
+                                ok = salva_materiale(gdest, r["area"], r["sottocartella"], r["file"], mime, b, f"Importato da {r['percorso']}")
+                                esiti.append((r["file"], r["area"], r["sottocartella"], "salvato" if ok else "già presente"))
+                            except Exception as e:
+                                esiti.append((r["file"], r["area"], r["sottocartella"], f"errore: {e}"[:120]))
+                        bar.progress(1.0, text="Completato")
+                        st.session_state["imp_esito"] = esiti
                         for k in ("imp_nome", "imp_df", "imp_cont"):
                             st.session_state.pop(k, None)
+                        st.rerun()  # ricarica la pagina: i contatori delle cartelle si aggiornano
 
     nav, main = st.columns([1, 2.6], gap="large")
     with nav:
