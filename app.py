@@ -609,6 +609,53 @@ def elenco_file(docs, key):
         st.rerun()
 
 
+def gestione_file(tabella: str, righe: pd.DataFrame, aree: list, sottocartelle: list, chiave: str,
+                   filtro_sql: str, parametri: dict, gruppi: list = None):
+    """Selezione multipla: elimina o sposta più file insieme (solo righe consentite da filtro_sql)."""
+    with st.expander("Gestisci più file insieme (elimina o sposta)"):
+        if righe.empty:
+            st.info("Nessun file da gestire.")
+            return
+        c1, c2 = st.columns([2, 1])
+        f_area = c1.selectbox("Mostra la cartella", ["Tutte"] + sorted(righe["area"].dropna().unique().tolist()), key=f"{chiave}_fa")
+        cerca = c2.text_input("Cerca nel nome", key=f"{chiave}_fc")
+        v = righe if f_area == "Tutte" else righe[righe["area"] == f_area]
+        if cerca:
+            v = v[v["nome_file"].str.contains(cerca, case=False)]
+        colonne = ["id", "nome_file", "area", "categoria"] + (["gruppo"] if "gruppo" in v.columns else [])
+        tab = v[colonne].assign(sel=False, MB=(v["dimensione"] / 1e6).round(2))[["sel"] + colonne + ["MB"]]
+        tutti = st.checkbox("Seleziona tutti quelli mostrati", key=f"{chiave}_all")
+        if tutti:
+            tab["sel"] = True
+        out = st.data_editor(tab, hide_index=True, width="stretch", key=f"{chiave}_ed_{int(tutti)}",
+                             disabled=[c for c in tab.columns if c != "sel"],
+                             column_config={"id": None, "sel": st.column_config.CheckboxColumn("✓"),
+                                            "nome_file": "File", "area": "Cartella", "categoria": "Sottocartella"})
+        ids = [int(i) for i in out.loc[out["sel"], "id"]]
+        st.caption(f"{len(ids)} file selezionati")
+        if not ids:
+            return
+        st.markdown("**Sposta i selezionati**")
+        d1, d2, d3 = st.columns([2, 1.2, 0.8] if gruppi else [2, 1.2, 0.01])
+        nuova_area = d1.selectbox("Nella cartella", aree, key=f"{chiave}_na")
+        nuova_sotto = d2.selectbox("Sottocartella", sottocartelle, key=f"{chiave}_ns")
+        nuovo_gruppo = d3.selectbox("Gruppo", gruppi, key=f"{chiave}_ng") if gruppi else None
+        if tabella == "documenti":  # le cartelle generali hanno una sola sottocartella
+            nuova_sotto = "Documenti" if nuova_area in GENERALI else (nuova_sotto if nuova_sotto != "Documenti" else "Altro")
+        if st.button(f"Sposta {len(ids)} file", key=f"{chiave}_mv"):
+            extra = ", gruppo=:g" if gruppi else ""
+            run(f"UPDATE {S}.{tabella} SET area=:a, categoria=:c{extra} WHERE id = ANY(:ids) AND ({filtro_sql})",
+                a=nuova_area, c=nuova_sotto, ids=ids, **({"g": nuovo_gruppo} if gruppi else {}), **parametri)
+            st.toast(f"{len(ids)} file spostati in {nuova_area} › {nuova_sotto}.")
+            st.rerun()
+        st.markdown("**Elimina i selezionati**")
+        conferma = st.checkbox(f"Confermo: elimina definitivamente {len(ids)} file", key=f"{chiave}_ok")
+        if st.button(f"Elimina {len(ids)} file", key=f"{chiave}_del", type="primary", disabled=not conferma):
+            run(f"DELETE FROM {S}.{tabella} WHERE id = ANY(:ids) AND ({filtro_sql})", ids=ids, **parametri)
+            st.toast(f"{len(ids)} file eliminati.")
+            st.rerun()
+
+
 def pag_documenti():
     st.title("I miei documenti")
     st.caption(f"Cartelle per insegnamento, laboratorio e attività. Visibili solo a te · max {MAX_FILE_MB} MB per file, "
@@ -634,8 +681,9 @@ def pag_documenti():
                 try:
                     with st.spinner("Scarico la cartella da Dropbox…"):
                         dati = scarica_dropbox(link.strip())
-                    df, cont = leggi_zip(dati, classifica_personale, ESCLUSI_PERSONALI)
-                    st.session_state.update(dimp_df=df, dimp_cont=cont)
+                    df, _ = leggi_zip(dati, classifica_personale, ESCLUSI_PERSONALI)
+                    del dati
+                    st.session_state.update(dimp_df=df, dimp_cont=None, dimp_link=link.strip())
                 except Exception as e:
                     st.error(f"Download non riuscito: {e}")
         else:
@@ -656,19 +704,26 @@ def pag_documenti():
             sel = out[out["importa"]]
             st.caption(f"{len(sel)} file selezionati su {len(out)} · {sel['MB'].sum():.1f} MB · spazio libero {QUOTA_MB - usato:.0f} MB")
             if st.button(f"Importa {len(sel)} file nei miei documenti", type="primary", disabled=sel.empty, key="dimp_ok"):
-                cont, n = st.session_state["dimp_cont"], 0
-                bar = st.progress(0.0)
+                cont, n = st.session_state.get("dimp_cont"), 0
+                bar = st.progress(0.0, text="Inizio il salvataggio…")
+                if cont is None:
+                    bar.progress(0.0, text="Riscarico la cartella da Dropbox…")
+                    _, cont = leggi_zip(scarica_dropbox(st.session_state["dimp_link"]), classifica_personale, ESCLUSI_PERSONALI)
                 for i, (_, r) in enumerate(sel.iterrows()):
                     b, mime = cont[r["sha1"]]
                     sotto = "Documenti" if r["area"] in GENERALI else (r["sottocartella"] if r["sottocartella"] != "Documenti" else "Altro")
                     gia = q(f"SELECT 1 FROM {S}.documenti WHERE utente_id=:u AND nome_file=:n AND dimensione=:d", u=uid(), n=r["file"], d=len(b))
                     if gia.empty and salva_file({"bytes": b, "name": r["file"], "mime": mime}, r["area"], sotto, None, f"Importato da {r['percorso']}"):
                         n += 1
-                    bar.progress((i + 1) / len(sel), text=r["file"])
+                    bar.progress((i + 1) / len(sel), text=f"Salvo {i + 1}/{len(sel)}: {r['file']}")
                 st.toast(f"Importati {n} file nei tuoi documenti.")
-                for k in ("dimp_df", "dimp_cont", "dimp_nome"):
+                del cont
+                for k in ("dimp_df", "dimp_cont", "dimp_nome", "dimp_link"):
                     st.session_state.pop(k, None)
                 st.rerun()
+
+    gestione_file("documenti", meta, [x for v in AREE.values() for x in v], SOTTOCARTELLE + ["Documenti"], "gdoc",
+                  "utente_id = :u", {"u": uid()})
 
     nav, main = st.columns([1, 2.6], gap="large")
     with nav:
@@ -864,8 +919,10 @@ def pag_materiali():
                     try:
                         with st.spinner("Scarico la cartella da Dropbox…"):
                             dati = scarica_dropbox(link.strip())
-                        df, cont = leggi_zip(dati)
-                        st.session_state.update(imp_nome=link.strip(), imp_df=df, imp_cont=cont)
+                        df, _ = leggi_zip(dati)
+                        del dati
+                        # in memoria resta solo l'elenco: i file si riscaricano al momento del salvataggio
+                        st.session_state.update(imp_nome=link.strip(), imp_df=df, imp_cont=None, imp_link=link.strip())
                     except Exception as e:
                         st.error(f"Download non riuscito: {e}")
             else:
@@ -889,8 +946,11 @@ def pag_materiali():
                     sel = out[out["importa"]]
                     st.caption(f"{len(sel)} file selezionati su {len(out)} · {sel['MB'].sum():.1f} MB")
                     if st.button(f"Importa i file selezionati nel Gruppo {gdest}", type="primary", disabled=sel.empty, key="imp_ok"):
-                        cont, esiti = st.session_state["imp_cont"], []
+                        cont, esiti = st.session_state.get("imp_cont"), []
                         bar = st.progress(0.0, text="Inizio il salvataggio…")
+                        if cont is None:
+                            bar.progress(0.0, text="Riscarico la cartella da Dropbox…")
+                            _, cont = leggi_zip(scarica_dropbox(st.session_state["imp_link"]))
                         for i, (_, r) in enumerate(sel.iterrows()):
                             bar.progress(i / len(sel), text=f"Salvo {i + 1}/{len(sel)}: {r['file']}")
                             b, mime = cont[r["sha1"]]
@@ -901,9 +961,18 @@ def pag_materiali():
                                 esiti.append((r["file"], r["area"], r["sottocartella"], f"errore: {e}"[:120]))
                         bar.progress(1.0, text="Completato")
                         st.session_state["imp_esito"] = esiti
-                        for k in ("imp_nome", "imp_df", "imp_cont"):
+                        del cont
+                        for k in ("imp_nome", "imp_df", "imp_cont", "imp_link"):
                             st.session_state.pop(k, None)
                         st.rerun()  # ricarica la pagina: i contatori delle cartelle si aggiornano
+
+    if editore:
+        if me().get("ruolo") == "admin":
+            filtro, par, gr = "TRUE", {}, GRUPPI + ["Tutti"]
+        else:
+            filtro, par, gr = "gruppo = ANY(:gg)", {"gg": [gruppo, "Tutti"]}, [gruppo, "Tutti"]
+        gestione_file("materiali", meta[meta["gruppo"].isin(gr)], [x for v in AREE_MATERIALI.values() for x in v],
+                      SOTTO_MATERIALI, "gmat", filtro, par, gr)
 
     nav, main = st.columns([1, 2.6], gap="large")
     with nav:
