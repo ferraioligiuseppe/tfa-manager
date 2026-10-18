@@ -195,7 +195,9 @@ def accesso():
                     st.error("Account disattivato: contatta l'amministratore.")
                 else:
                     user = r.iloc[0].drop("pwd_hash").to_dict()
-                    run(f"UPDATE {S}.utenti SET ultimo_accesso=now() WHERE id=:u", u=int(user["id"]))
+                    # l'unico amministratore è l'utente indicato nei Secrets: il ruolo si ricalcola a ogni accesso
+                    user["ruolo"] = "admin" if user["username"].lower() == str(st.secrets.get("admin_username", "")).lower() else "corsista"
+                    run(f"UPDATE {S}.utenti SET ultimo_accesso=now(), ruolo=:r WHERE id=:u", u=int(user["id"]), r=user["ruolo"])
                     user["id"] = int(user["id"])
                     st.session_state["user"] = user
                     st.rerun()
@@ -476,16 +478,16 @@ def pag_admin():
     with t1:
         ut = q(f"SELECT id, username, nome, cognome, gruppo, email, ruolo, attivo, creato_il, ultimo_accesso FROM {S}.utenti ORDER BY cognome")
         out = st.data_editor(ut, hide_index=True, width="stretch", key="adm_ut",
-                             disabled=["id", "username", "nome", "cognome", "email", "creato_il", "ultimo_accesso"],
-                             column_config={"ruolo": st.column_config.SelectboxColumn(options=["corsista", "admin"]),
-                                            "gruppo": st.column_config.SelectboxColumn(options=GRUPPI)})
+                             disabled=["id", "username", "nome", "cognome", "email", "ruolo", "creato_il", "ultimo_accesso"],
+                             column_config={"gruppo": st.column_config.SelectboxColumn(options=GRUPPI)})
         if st.button("Salva iscritti", type="primary"):
             for _, r in out.iterrows():
-                if int(r["id"]) == uid() and (not r["attivo"] or r["ruolo"] != "admin"):
-                    st.error("Non puoi disattivare o declassare te stesso."); break
-                run(f"UPDATE {S}.utenti SET ruolo=:r, attivo=:a, gruppo=:g WHERE id=:i", r=r["ruolo"], a=bool(r["attivo"]), g=r["gruppo"], i=int(r["id"]))
+                if int(r["id"]) == uid() and not r["attivo"]:
+                    st.error("Non puoi disattivare il tuo account."); break
+                run(f"UPDATE {S}.utenti SET attivo=:a, gruppo=:g WHERE id=:i", a=bool(r["attivo"]), g=r["gruppo"], i=int(r["id"]))
             else:
                 st.toast("Iscritti aggiornati.")
+        st.caption("Unico amministratore: l'utente indicato in admin_username nei Secrets. Il ruolo non si modifica da qui.")
         st.caption(f"Codice di invito attuale: impostato nei Secrets di Streamlit ({'presente' if st.secrets.get('codice_invito') else 'MANCANTE'}).")
     with t2:
         ins = q(f"SELECT nome FROM {S}.insegnamenti")["nome"].tolist() + ["Da definire"]
