@@ -151,6 +151,8 @@ CREATE TABLE IF NOT EXISTS {S}.materiali (id SERIAL PRIMARY KEY, gruppo TEXT DEF
   nome_file TEXT, mime TEXT, dimensione INT, sha1 TEXT, note TEXT, contenuto BYTEA,
   caricato_da INT REFERENCES {S}.utenti(id) ON DELETE SET NULL, caricato_il TIMESTAMPTZ DEFAULT now());
 CREATE INDEX IF NOT EXISTS materiali_gruppo ON {S}.materiali(gruppo, area);
+CREATE TABLE IF NOT EXISTS {S}.sessioni (token_hash TEXT PRIMARY KEY, utente_id INT REFERENCES {S}.utenti(id) ON DELETE CASCADE,
+  scade TIMESTAMPTZ, creato_il TIMESTAMPTZ DEFAULT now());
 CREATE TABLE IF NOT EXISTS {S}.soggiorni (id SERIAL PRIMARY KEY, utente_id INT REFERENCES {S}.utenti(id) ON DELETE CASCADE,
   checkin DATE, checkout DATE, vicino_a TEXT, persone INT, budget INT, tipologie TEXT, dettaglio TEXT, creato_il TIMESTAMPTZ DEFAULT now());
 CREATE TABLE IF NOT EXISTS {S}.generazioni (id SERIAL PRIMARY KEY, utente_id INT REFERENCES {S}.utenti(id) ON DELETE CASCADE,
@@ -278,8 +280,81 @@ def nuovo_utente(username, email, pwd, nome, cognome, matricola, gruppo):
             c.execute(text(f"UPDATE {S}.utenti SET scuola_tirocinio='Liceo «Mons. B. Mangino», Pagani' WHERE id=:u"), {"u": u})
 
 
+COOKIE = "tfa_sessione"
+DURATA_GIORNI = 30
+
+
+def _hash_token(t: str) -> str:
+    import hashlib
+    return hashlib.sha256(t.encode()).hexdigest()
+
+
+def imposta_cookie(valore: str, max_age: int):
+    """Scrive il cookie nel browser con un piccolo script (stessa origine dell'app)."""
+    js = (f"<script>document.cookie = '{COOKIE}={valore}; max-age={max_age}; path=/; SameSite=Lax'"
+          f" + (location.protocol === 'https:' ? '; Secure' : '');</script>")
+    try:
+        st.iframe(js, height=1)
+    except Exception:
+        import streamlit.components.v1 as components
+        components.html(js, height=0)
+
+
+def entra(riga, ricordami: bool = False):
+    """Prepara la sessione dell'utente; con «ricordami» crea un accesso valido 30 giorni su questo browser."""
+    import secrets as _s
+    user = riga.drop("pwd_hash").to_dict()
+    # l'unico amministratore è l'utente indicato nei Secrets: il ruolo si ricalcola a ogni accesso
+    user["ruolo"] = "admin" if user["username"].lower() == str(st.secrets.get("admin_username", "")).lower() else "corsista"
+    user["id"] = int(user["id"])
+    run(f"UPDATE {S}.utenti SET ultimo_accesso=now(), ruolo=:r WHERE id=:u", u=user["id"], r=user["ruolo"])
+    st.session_state["user"] = user
+    st.session_state["cambia_pwd"] = bool(user.get("pwd_temporanea"))
+    if ricordami:
+        token = _s.token_urlsafe(32)
+        run(f"DELETE FROM {S}.sessioni WHERE scade < now()")
+        run(f"INSERT INTO {S}.sessioni (token_hash, utente_id, scade) VALUES (:h, :u, now() + make_interval(days => :g))",
+            h=_hash_token(token), u=user["id"], g=DURATA_GIORNI)
+        st.session_state["cookie_da_scrivere"] = token
+
+
+def ripristina_sessione() -> bool:
+    """Dopo un ricaricamento (F5) rientra in automatico se il browser ha un accesso valido."""
+    try:
+        token = st.context.cookies.get(COOKIE)
+    except Exception:
+        token = None
+    if not token:
+        return False
+    r = q(f"""SELECT u.* FROM {S}.sessioni s JOIN {S}.utenti u ON u.id = s.utente_id
+              WHERE s.token_hash=:h AND s.scade > now() AND u.attivo""", h=_hash_token(token))
+    if r.empty:
+        return False
+    entra(r.iloc[0])
+    st.session_state["token_attuale"] = token
+    return True
+
+
+def esci():
+    token = st.session_state.get("token_attuale") or st.session_state.get("cookie_da_scrivere")
+    if not token:
+        try:
+            token = st.context.cookies.get(COOKIE)
+        except Exception:
+            token = None
+    if token:
+        run(f"DELETE FROM {S}.sessioni WHERE token_hash=:h", h=_hash_token(token))
+    st.session_state.clear()
+    st.session_state["cancella_cookie"] = True
+    st.rerun()
+
+
 def accesso():
     if "user" in st.session_state:
+        return True
+    if st.session_state.pop("cancella_cookie", False):
+        imposta_cookie("", 0)
+    elif ripristina_sessione():
         return True
     st.title("TFA Manager")
     t_login, t_reg = st.tabs(["Accedi", "Registrati"])
@@ -287,6 +362,8 @@ def accesso():
         with st.form("login"):
             ident = st.text_input("Nome utente o email")
             pwd = st.text_input("Password", type="password")
+            ricordami = st.checkbox("Resta collegato su questo dispositivo per 30 giorni", value=True,
+                                    help="Non spuntarlo su computer condivisi o pubblici.")
             if st.form_submit_button("Accedi", type="primary"):
                 r = q(f"SELECT * FROM {S}.utenti WHERE lower(username)=lower(:i) OR lower(email)=lower(:i)", i=ident.strip())
                 try:
@@ -298,13 +375,7 @@ def accesso():
                 elif not r.iloc[0]["attivo"]:
                     st.error("Account disattivato: contatta l'amministratore.")
                 else:
-                    user = r.iloc[0].drop("pwd_hash").to_dict()
-                    # l'unico amministratore è l'utente indicato nei Secrets: il ruolo si ricalcola a ogni accesso
-                    user["ruolo"] = "admin" if user["username"].lower() == str(st.secrets.get("admin_username", "")).lower() else "corsista"
-                    run(f"UPDATE {S}.utenti SET ultimo_accesso=now(), ruolo=:r WHERE id=:u", u=int(user["id"]), r=user["ruolo"])
-                    user["id"] = int(user["id"])
-                    st.session_state["user"] = user
-                    st.session_state["cambia_pwd"] = bool(user.get("pwd_temporanea"))
+                    entra(r.iloc[0], ricordami)
                     st.rerun()
     with t_reg:
         with st.form("reg"):
@@ -1066,6 +1137,8 @@ def pag_profilo():
                     st.error("Le nuove password non coincidono o sono troppo corte.")
                 else:
                     run(f"UPDATE {S}.utenti SET pwd_hash=:h WHERE id=:u", h=bcrypt.hashpw(n1.encode(), bcrypt.gensalt()).decode(), u=uid())
+                    run(f"DELETE FROM {S}.sessioni WHERE utente_id=:u AND token_hash <> :h", u=uid(),
+                        h=_hash_token(st.session_state.get("token_attuale", "")))  # gli altri dispositivi devono rientrare
                     st.success("Password aggiornata.")
     with st.expander("I miei dati (privacy)"):
         st.markdown(INFORMATIVA)
@@ -1125,6 +1198,8 @@ def pag_admin():
                 lim = None if pd.isna(r["limite_mensile"]) else int(r["limite_mensile"])
                 run(f"UPDATE {S}.utenti SET attivo=:a, gruppo=:g, limite_mensile=:l, referente=:rf WHERE id=:i",
                     a=bool(r["attivo"]), g=r["gruppo"], l=lim, rf=bool(r["referente"]), i=int(r["id"]))
+                if not r["attivo"]:
+                    run(f"DELETE FROM {S}.sessioni WHERE utente_id=:i", i=int(r["id"]))
             else:
                 st.toast("Iscritti aggiornati.")
         st.markdown("**Reimposta la password di un iscritto**")
@@ -1139,6 +1214,7 @@ def pag_admin():
                 nuova = password_provvisoria()
                 run(f"UPDATE {S}.utenti SET pwd_hash=:h, pwd_temporanea=TRUE WHERE id=:i",
                     h=bcrypt.hashpw(nuova.encode(), bcrypt.gensalt()).decode(), i=int(chi))
+                run(f"DELETE FROM {S}.sessioni WHERE utente_id=:i", i=int(chi))  # esce da tutti i dispositivi
                 st.session_state["ultima_reset"] = (altri.set_index("id").loc[chi, "username"], nuova)
             if st.session_state.get("ultima_reset"):
                 un, pw = st.session_state["ultima_reset"]
@@ -1455,6 +1531,10 @@ except Exception as e:
 
 if not accesso():
     st.stop()
+if st.session_state.get("cookie_da_scrivere"):
+    tok = st.session_state.pop("cookie_da_scrivere")
+    st.session_state["token_attuale"] = tok
+    imposta_cookie(tok, DURATA_GIORNI * 86400)
 if st.session_state.get("cambia_pwd"):
     cambio_obbligatorio()
     st.stop()
@@ -1469,8 +1549,7 @@ with st.sidebar:
     scelta = st.radio("Sezioni", list(PAGINE))
     st.divider()
     if st.button("Esci"):
-        st.session_state.clear()
-        st.rerun()
+        esci()
     mostra_spot()
     st.caption(credito())
 PAGINE[scelta]()
