@@ -62,6 +62,23 @@ GENERALI = ["Relazione finale", "Registri e firme", "Documenti personali", "Altr
 AREE = {"Insegnamenti": [u for _, u in INSEGNAMENTI_UFF], "Laboratori": LABORATORI,
         "Altre attività": ATTIVITA, "Generali": GENERALI}
 SOTTOCARTELLE = ["Moduli didattica asincrona", "Slide e materiali di studio", "Elaborati e consegne", "Altro"]
+COMUNICAZIONI = "Calendario e comunicazioni del corso"
+AREE_MATERIALI = {"Insegnamenti": AREE["Insegnamenti"], "Laboratori": LABORATORI, "Altre attività": ATTIVITA,
+                  "Corso": [COMUNICAZIONI]}
+SOTTO_MATERIALI = ["Moduli didattica asincrona", "Slide e materiali di studio", "Altro"]
+MAX_MATERIALE_MB = 50
+# riconoscimento automatico dell'insegnamento dal nome del docente o del file
+DOCENTI_AREA = {
+    "casillo": "Neuropsichiatria Infantile", "simonetti": "Ped. e Did. disabilità intellettiva",
+    "federici": "Modelli integrati", "palmieri": "Did. disabilità sensoriali", "tafuri": "Did. disabilità sensoriali",
+    "moretti": "Didattica metacognitiva", "metacognitiv": "Didattica metacognitiva",
+    "terrinoni": "Psicologia dello sviluppo", "di gneo": "Psicologia dello sviluppo", "digneo": "Psicologia dello sviluppo",
+    "mancini": "Pedagogia relazione d’aiuto", "legislazione": "Legislazione scolastica",
+    "neuropsichiatria": "Neuropsichiatria Infantile", "sensorial": "Did. disabilità sensoriali",
+    "psicologia dello sviluppo": "Psicologia dello sviluppo", "disabilità intellettiva": "Ped. e Did. disabilità intellettiva",
+    "gruppo classe": "Ped. speciale gestione gruppo classe", "pei": "Progettazione PDF e PEI"}
+ESCLUSI = ["/ai/", "gestionale", "tfa-manager", "passaporto", "iban", "piano_carriera", "chiave", "ferraioli",
+           "qrcode", "viaggi_tfa", "tfa-app", "__macosx", "/.", "lntf"]
 MAX_FILE_MB, QUOTA_MB = 20, 500
 CAPITOLI = [
     "1. Macrocontesto – Denominazione e tipologia istituto",
@@ -130,6 +147,10 @@ CREATE INDEX IF NOT EXISTS documenti_utente ON {S}.documenti(utente_id);
 CREATE TABLE IF NOT EXISTS {S}.impostazioni (chiave TEXT PRIMARY KEY, valore TEXT);
 CREATE TABLE IF NOT EXISTS {S}.spot (id SERIAL PRIMARY KEY, ordine INT DEFAULT 0, attivo BOOLEAN DEFAULT TRUE,
   titolo TEXT, testo TEXT, pulsante TEXT, link TEXT);
+CREATE TABLE IF NOT EXISTS {S}.materiali (id SERIAL PRIMARY KEY, gruppo TEXT DEFAULT 'C', area TEXT, categoria TEXT,
+  nome_file TEXT, mime TEXT, dimensione INT, sha1 TEXT, note TEXT, contenuto BYTEA,
+  caricato_da INT REFERENCES {S}.utenti(id) ON DELETE SET NULL, caricato_il TIMESTAMPTZ DEFAULT now());
+CREATE INDEX IF NOT EXISTS materiali_gruppo ON {S}.materiali(gruppo, area);
 CREATE TABLE IF NOT EXISTS {S}.soggiorni (id SERIAL PRIMARY KEY, utente_id INT REFERENCES {S}.utenti(id) ON DELETE CASCADE,
   checkin DATE, checkout DATE, vicino_a TEXT, persone INT, budget INT, tipologie TEXT, dettaglio TEXT, creato_il TIMESTAMPTZ DEFAULT now());
 CREATE TABLE IF NOT EXISTS {S}.generazioni (id SERIAL PRIMARY KEY, utente_id INT REFERENCES {S}.utenti(id) ON DELETE CASCADE,
@@ -153,6 +174,7 @@ def init_db():
         c.execute(text(f"ALTER TABLE {S}.utenti ADD COLUMN IF NOT EXISTS limite_mensile INT"))
         c.execute(text(f"ALTER TABLE {S}.utenti ADD COLUMN IF NOT EXISTS citta_partenza TEXT"))
         c.execute(text(f"ALTER TABLE {S}.utenti ADD COLUMN IF NOT EXISTS pwd_temporanea BOOLEAN DEFAULT FALSE"))
+        c.execute(text(f"ALTER TABLE {S}.utenti ADD COLUMN IF NOT EXISTS referente BOOLEAN DEFAULT FALSE"))
         for col in ("data DATE", "partenza TEXT", "destinazione TEXT", "mezzo TEXT", "dettaglio TEXT", "creato_il TIMESTAMPTZ DEFAULT now()"):
             c.execute(text(f"ALTER TABLE {S}.viaggi ADD COLUMN IF NOT EXISTS {col}"))
         if c.execute(text(f"SELECT COUNT(*) FROM {S}.insegnamenti")).scalar():
@@ -250,7 +272,11 @@ def accesso():
             pwd = st.text_input("Password", type="password")
             if st.form_submit_button("Accedi", type="primary"):
                 r = q(f"SELECT * FROM {S}.utenti WHERE lower(username)=lower(:i) OR lower(email)=lower(:i)", i=ident.strip())
-                if r.empty or not bcrypt.checkpw(pwd.encode(), r.iloc[0]["pwd_hash"].encode()):
+                try:
+                    ok_pwd = not r.empty and bcrypt.checkpw(pwd.encode(), r.iloc[0]["pwd_hash"].encode())
+                except ValueError:
+                    ok_pwd = False
+                if not ok_pwd:
                     st.error("Nome utente o password errati.")
                 elif not r.iloc[0]["attivo"]:
                     st.error("Account disattivato: contatta l'amministratore.")
@@ -485,6 +511,164 @@ def pag_documenti():
         st.dataframe(trovati[["area", "categoria", "nome_file", "versione", "note"]], hide_index=True, width="stretch")
         if not trovati.empty:
             elenco_file(trovati, "cerca")
+
+
+def puo_caricare_materiali():
+    return me().get("ruolo") == "admin" or bool(q(f"SELECT referente FROM {S}.utenti WHERE id=:u", u=uid())["referente"].iloc[0])
+
+
+def classifica(percorso: str):
+    """Da un percorso nello zip ricava: importare?, area (nome ufficiale), sottocartella."""
+    p = "/" + percorso.lower().replace("\\", "/")
+    nome = p.rsplit("/", 1)[-1]
+    est = nome.rsplit(".", 1)[-1] if "." in nome else ""
+    importa = not any(x in p for x in ESCLUSI) and est in ("pdf", "docx", "doc", "pptx", "ppt", "xlsx", "odt", "jpg", "png", "mp4")
+    area = None
+    if "brillantino" in p or "tirocinio indiretto" in p:
+        area = ATTIVITA[1]
+    elif "tirocino diretto" in p or "tirocinio diretto" in p or "registri firme" in p:
+        area = ATTIVITA[2]
+    elif "calendario" in nome or "nota corsisti" in nome:
+        area = COMUNICAZIONI
+    else:
+        for chiave, breve in DOCENTI_AREA.items():
+            if chiave in p:
+                area = UFFICIALE[breve]; break
+    if area is None:
+        area, importa = COMUNICAZIONI, False
+    sotto = ("Moduli didattica asincrona" if any(k in nome for k in ("modulo", "esercitazione", "prova", "asincron"))
+             else "Slide e materiali di studio")
+    if "registri" in nome:
+        sotto = "Altro"
+    return importa, area, sotto
+
+
+def leggi_zip(dati: bytes):
+    """Estrae i file dallo zip (anche dagli zip annidati, un livello) senza duplicati."""
+    import hashlib, mimetypes
+    visti, righe, contenuti = set(), [], {}
+
+    def scorri(zb, prefisso=""):
+        with zipfile.ZipFile(io.BytesIO(zb)) as z:
+            for info in z.infolist():
+                if info.is_dir():
+                    continue
+                nome_pieno = prefisso + info.filename
+                b = z.read(info)
+                if nome_pieno.lower().endswith(".zip") and not prefisso:
+                    if any(x in "/" + nome_pieno.lower() for x in ESCLUSI):
+                        continue  # archivi personali: non si aprono nemmeno
+                    try:
+                        scorri(b, nome_pieno[:-4] + "/")
+                    except zipfile.BadZipFile:
+                        pass
+                    continue
+                h = hashlib.sha1(b).hexdigest()
+                if h in visti:
+                    continue
+                visti.add(h)
+                imp, area, sotto = classifica(nome_pieno)
+                if len(b) > MAX_MATERIALE_MB * 1e6:
+                    imp = False
+                righe.append({"importa": imp, "file": nome_pieno.rsplit("/", 1)[-1], "percorso": nome_pieno,
+                              "area": area, "sottocartella": sotto, "MB": round(len(b) / 1e6, 2), "sha1": h})
+                contenuti[h] = (b, mimetypes.guess_type(nome_pieno)[0] or "application/octet-stream")
+    scorri(dati)
+    return pd.DataFrame(righe), contenuti
+
+
+def salva_materiale(gruppo, area, sotto, nome, mime, b, note=""):
+    import hashlib
+    h = hashlib.sha1(b).hexdigest()
+    if not q(f"SELECT id FROM {S}.materiali WHERE sha1=:h AND gruppo=:g", h=h, g=gruppo).empty:
+        return False  # già presente
+    run(f"""INSERT INTO {S}.materiali (gruppo, area, categoria, nome_file, mime, dimensione, sha1, note, contenuto, caricato_da)
+            VALUES (:g,:a,:c,:n,:m,:d,:h,:no,:b,:u)""", g=gruppo, a=area, c=sotto, n=nome, m=mime, d=len(b), h=h, no=note, b=b, u=uid())
+    return True
+
+
+def pag_materiali():
+    st.title("Materiali del corso")
+    gruppo = me().get("gruppo") or "C"
+    editore = puo_caricare_materiali()
+    st.caption(f"Slide, moduli e comunicazioni del Gruppo {gruppo} e del corso, condivisi tra i corsisti registrati. "
+               + ("Puoi caricare ed eliminare materiali." if editore else "Caricano l’amministratore e i referenti di gruppo."))
+    gruppi_visibili = list(GRUPPI) + ["Tutti"] if me().get("ruolo") == "admin" else [gruppo, "Tutti"]
+    meta = q(f"""SELECT id, gruppo, area, categoria, nome_file, dimensione, note, caricato_il FROM {S}.materiali
+                 WHERE gruppo = ANY(:g) ORDER BY nome_file""", g=gruppi_visibili)
+    conteggi = meta.groupby("area").size().to_dict() if not meta.empty else {}
+
+    if editore:
+        with st.expander("Importa una cartella intera (zip)"):
+            st.markdown("Scarica da Dropbox la cartella dei materiali come **.zip** e caricala qui: l’app riconosce "
+                        "l’insegnamento dal nome del docente o del file, mette moduli ed esercitazioni in «Moduli didattica "
+                        "asincrona» e il resto in «Slide e materiali di studio», salta i doppioni. Prima di importare puoi "
+                        "correggere tutto nella tabella. **Escludi sempre documenti personali ed elaborati.**")
+            gdest = st.selectbox("Gruppo di destinazione", ([gruppo, "Tutti"] if me().get("ruolo") != "admin" else GRUPPI + ["Tutti"]),
+                                 index=0 if me().get("ruolo") != "admin" else GRUPPI.index(gruppo), key="imp_gr")
+            z = st.file_uploader("File .zip", type=["zip"], key="imp_zip")
+            if z is not None:
+                if st.session_state.get("imp_nome") != z.name:
+                    try:
+                        df, cont = leggi_zip(z.getvalue())
+                    except zipfile.BadZipFile:
+                        st.error("Il file non è uno zip valido."); df, cont = pd.DataFrame(), {}
+                    st.session_state.update(imp_nome=z.name, imp_df=df, imp_cont=cont)
+                df = st.session_state.get("imp_df", pd.DataFrame())
+                if not df.empty:
+                    tutte = [a for v in AREE_MATERIALI.values() for a in v]
+                    out = st.data_editor(df, hide_index=True, width="stretch", key="imp_ed",
+                                         disabled=["file", "percorso", "MB"],
+                                         column_config={"sha1": None,
+                                                        "importa": st.column_config.CheckboxColumn("Importa"),
+                                                        "area": st.column_config.SelectboxColumn("Cartella", options=tutte, width="large"),
+                                                        "sottocartella": st.column_config.SelectboxColumn("Sottocartella", options=SOTTO_MATERIALI)})
+                    sel = out[out["importa"]]
+                    st.caption(f"{len(sel)} file selezionati su {len(out)} · {sel['MB'].sum():.1f} MB")
+                    if st.button(f"Importa {len(sel)} file nel Gruppo {gdest}", type="primary", disabled=sel.empty):
+                        cont, nuovi = st.session_state["imp_cont"], 0
+                        bar = st.progress(0.0)
+                        for i, (_, r) in enumerate(sel.iterrows()):
+                            b, mime = cont[r["sha1"]]
+                            nuovi += salva_materiale(gdest, r["area"], r["sottocartella"], r["file"], mime, b, f"Importato da {r['percorso']}")
+                            bar.progress((i + 1) / len(sel))
+                        st.success(f"Importati {nuovi} file; {len(sel) - nuovi} erano già presenti.")
+                        for k in ("imp_nome", "imp_df", "imp_cont"):
+                            st.session_state.pop(k, None)
+
+    nav, main = st.columns([1, 2.6], gap="large")
+    with nav:
+        sez = st.radio("Sezione", list(AREE_MATERIALI), key="mat_sez")
+        area = st.radio("Cartella", AREE_MATERIALI[sez], key=f"mat_area_{sez}",
+                        format_func=lambda a: f"{a}  ({conteggi.get(a, 0)})")
+    with main:
+        st.subheader(area)
+        for tab, sotto in zip(st.tabs([f"{x} ({len(meta[(meta['area'] == area) & (meta['categoria'] == x)])})" for x in SOTTO_MATERIALI]), SOTTO_MATERIALI):
+            with tab:
+                k = f"m{abs(hash(area)) % 10**8}_{SOTTO_MATERIALI.index(sotto)}"
+                if editore:
+                    with st.form(f"mup_{k}", clear_on_submit=True):
+                        files = st.file_uploader("Aggiungi materiali", accept_multiple_files=True, key=f"mfu_{k}")
+                        g = st.selectbox("Visibile a", [gruppo, "Tutti"], key=f"mg_{k}")
+                        if st.form_submit_button("Carica", type="primary") and files:
+                            n = sum(salva_materiale(g, area, sotto, f.name, f.type or "application/octet-stream", f.getvalue())
+                                    for f in files if len(f.getvalue()) <= MAX_MATERIALE_MB * 1e6)
+                            st.toast(f"{n} file caricati."); st.rerun()
+                righe = meta[(meta["area"] == area) & (meta["categoria"] == sotto)]
+                if righe.empty:
+                    st.info("Nessun materiale in questa cartella.")
+                    continue
+                st.dataframe(righe.assign(MB=(righe["dimensione"] / 1e6).round(1))[["nome_file", "gruppo", "MB"]],
+                             hide_index=True, width="stretch", column_config={"nome_file": "File"})
+                idx = righe.set_index("id")
+                scelta = st.selectbox("Apri", righe["id"].tolist(), key=f"msel_{k}", format_func=lambda i: idx.loc[i, "nome_file"])
+                r = q(f"SELECT nome_file, mime, contenuto FROM {S}.materiali WHERE id=:i AND gruppo = ANY(:g)",
+                      i=int(scelta), g=gruppi_visibili).iloc[0]
+                c1, c2 = st.columns(2)
+                c1.download_button("Scarica", bytes(r["contenuto"]), file_name=r["nome_file"], mime=r["mime"], type="primary", key=f"mdl_{k}")
+                if editore and c2.button("Elimina dal corso", key=f"mdel_{k}"):
+                    run(f"DELETE FROM {S}.materiali WHERE id=:i", i=int(scelta))
+                    st.rerun()
 
 
 def pag_tesi():
@@ -742,10 +926,11 @@ def pag_admin():
                titolo="Titolo", testo=st.column_config.TextColumn("Testo", width="large"), pulsante="Pulsante",
                link=st.column_config.LinkColumn("Link"))
     with t1:
-        ut = q(f"SELECT id, username, nome, cognome, gruppo, email, ruolo, attivo, limite_mensile, creato_il, ultimo_accesso FROM {S}.utenti ORDER BY cognome")
+        ut = q(f"SELECT id, username, nome, cognome, gruppo, email, ruolo, attivo, referente, limite_mensile, creato_il, ultimo_accesso FROM {S}.utenti ORDER BY cognome")
         out = st.data_editor(ut, hide_index=True, width="stretch", key="adm_ut",
                              disabled=["id", "username", "nome", "cognome", "email", "ruolo", "creato_il", "ultimo_accesso"],
                              column_config={"gruppo": st.column_config.SelectboxColumn(options=GRUPPI),
+                                            "referente": st.column_config.CheckboxColumn("Referente", help="Può caricare i materiali del corso per il proprio gruppo"),
                                             "limite_mensile": st.column_config.NumberColumn(
                                                 "Limite mensile testi", min_value=0, step=5,
                                                 help="Vuoto = valore predefinito dei Secrets. 0 = generazione disattivata. Non vale per l'amministratore.")})
@@ -754,8 +939,8 @@ def pag_admin():
                 if int(r["id"]) == uid() and not r["attivo"]:
                     st.error("Non puoi disattivare il tuo account."); break
                 lim = None if pd.isna(r["limite_mensile"]) else int(r["limite_mensile"])
-                run(f"UPDATE {S}.utenti SET attivo=:a, gruppo=:g, limite_mensile=:l WHERE id=:i",
-                    a=bool(r["attivo"]), g=r["gruppo"], l=lim, i=int(r["id"]))
+                run(f"UPDATE {S}.utenti SET attivo=:a, gruppo=:g, limite_mensile=:l, referente=:rf WHERE id=:i",
+                    a=bool(r["attivo"]), g=r["gruppo"], l=lim, rf=bool(r["referente"]), i=int(r["id"]))
             else:
                 st.toast("Iscritti aggiornati.")
         st.markdown("**Reimposta la password di un iscritto**")
@@ -1088,7 +1273,7 @@ if st.session_state.get("cambia_pwd"):
     st.stop()
 
 PAGINE = {"Cruscotto": pag_cruscotto, "Calendario": pag_calendario, "Asincrone": pag_asincrone,
-          "Assenze e recuperi": pag_assenze, "Tirocinio": pag_tirocinio, "Documenti": pag_documenti,
+          "Assenze e recuperi": pag_assenze, "Tirocinio": pag_tirocinio, "Materiali del corso": pag_materiali, "Documenti": pag_documenti,
           "Relazione finale": pag_tesi, "Genera testi": pag_genera, "Viaggi": pag_viaggi, "Soggiorno": pag_soggiorno, "Profilo": pag_profilo}
 if me().get("ruolo") == "admin":
     PAGINE["Amministrazione"] = pag_admin
