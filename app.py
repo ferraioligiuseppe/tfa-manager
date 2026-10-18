@@ -22,7 +22,8 @@ import streamlit as st
 from sqlalchemy import create_engine, text
 
 st.set_page_config(page_title="TFA Manager", page_icon="🎓", layout="wide")
-S = "tfa"
+# Database dedicato: le tabelle stanno nello schema «public» (modificabile con [db] schema = "...")
+S = st.secrets.get("db", {}).get("schema", "public")
 TZ = ZoneInfo("Europe/Rome")
 OGGI = datetime.now(TZ).date()
 GIORNI = ["lun", "mar", "mer", "gio", "ven", "sab", "dom"]
@@ -63,8 +64,7 @@ def engine():
     return create_engine(st.secrets["db"]["url"], pool_pre_ping=True)
 
 
-DDL = f"""
-CREATE SCHEMA IF NOT EXISTS {S};
+DDL = ("" if S == "public" else f"CREATE SCHEMA IF NOT EXISTS {S};") + f"""
 CREATE TABLE IF NOT EXISTS {S}.utenti (
   id SERIAL PRIMARY KEY, username TEXT UNIQUE NOT NULL, email TEXT UNIQUE NOT NULL, pwd_hash TEXT NOT NULL,
   ruolo TEXT DEFAULT 'corsista', attivo BOOLEAN DEFAULT TRUE, nome TEXT, cognome TEXT, matricola TEXT,
