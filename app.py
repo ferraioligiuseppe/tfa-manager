@@ -77,6 +77,21 @@ CAPITOLI = [
     "5. Conclusioni",
     "6. Bibliografia e sitografia",
     "7. Allegati"]
+PNEV = "https://www.pnev.it/"
+FIRMA_DEFAULT = "Dott. Giuseppe Ferraioli"
+TITOLI_DEFAULT = "Psicologo · Neuropsicologo · Optometrista comportamentale · Istruttore INPP, RMT e MNRI"
+SPOT_DEFAULT = [
+    {"ordine": 1, "titolo": "PNEV Games a scuola", "pulsante": "Scopri i giochi", "link": PNEV,
+     "testo": "Giochi digitali per allenare attenzione, memoria, funzioni esecutive e abilità visive. Pensati per LIM e tablet: portali nella tua classe."},
+    {"ordine": 2, "titolo": "Valutazioni per l’età evolutiva", "pulsante": "Prenota una valutazione", "link": PNEV,
+     "testo": "Valutazioni neuropsicologiche, degli apprendimenti e visuo-uditive allo Studio The Organism di Pagani, Sant’Agnello e Avellino."},
+    {"ordine": 3, "titolo": "I video PNEV", "pulsante": "Guarda i video", "link": PNEV,
+     "testo": "Riflessi primitivi, stimolazione visiva e uditiva spiegati passo passo: materiali per docenti e famiglie."},
+    {"ordine": 4, "titolo": "Screening gratuito per le scuole", "pulsante": "Richiedi lo screening", "link": PNEV,
+     "testo": "Screening degli apprendimenti gratuito per le scuole dell’Agro nocerino-sarnese. Contatti: WhatsApp 391 3598767."},
+    {"ordine": 5, "titolo": "Giochiamo imparando", "pulsante": "Vai alle schede", "link": PNEV,
+     "testo": "Schede di pregrafismo e corsivo, interattive e stampabili, da usare in classe e a casa."}]
+
 INFORMATIVA = """**Informativa sul trattamento dei dati (sintesi)**
 Titolare: Giuseppe Ferraioli, amministratore della piattaforma. Dati trattati: dati di profilo
 (nome, matricola, recapiti, scuola di tirocinio) e documenti caricati, al solo scopo di organizzare
@@ -112,6 +127,9 @@ CREATE TABLE IF NOT EXISTS {S}.documenti (id SERIAL PRIMARY KEY, utente_id INT R
   categoria TEXT, capitolo TEXT, nome_file TEXT, mime TEXT, dimensione INT, versione INT DEFAULT 1, note TEXT,
   contenuto BYTEA, caricato_il TIMESTAMPTZ DEFAULT now());
 CREATE INDEX IF NOT EXISTS documenti_utente ON {S}.documenti(utente_id);
+CREATE TABLE IF NOT EXISTS {S}.impostazioni (chiave TEXT PRIMARY KEY, valore TEXT);
+CREATE TABLE IF NOT EXISTS {S}.spot (id SERIAL PRIMARY KEY, ordine INT DEFAULT 0, attivo BOOLEAN DEFAULT TRUE,
+  titolo TEXT, testo TEXT, pulsante TEXT, link TEXT);
 CREATE TABLE IF NOT EXISTS {S}.soggiorni (id SERIAL PRIMARY KEY, utente_id INT REFERENCES {S}.utenti(id) ON DELETE CASCADE,
   checkin DATE, checkout DATE, vicino_a TEXT, persone INT, budget INT, tipologie TEXT, dettaglio TEXT, creato_il TIMESTAMPTZ DEFAULT now());
 CREATE TABLE IF NOT EXISTS {S}.generazioni (id SERIAL PRIMARY KEY, utente_id INT REFERENCES {S}.utenti(id) ON DELETE CASCADE,
@@ -128,6 +146,9 @@ def init_db():
         for stmt in DDL.split(";"):
             if stmt.strip():
                 c.execute(text(stmt))
+        if not c.execute(text(f"SELECT COUNT(*) FROM {S}.spot")).scalar():
+            pd.DataFrame(SPOT_DEFAULT).to_sql("spot", c, schema=S, if_exists="append", index=False)
+            c.execute(text(f"INSERT INTO {S}.impostazioni VALUES ('spot_attivo','1') ON CONFLICT DO NOTHING"))
         c.execute(text(f"ALTER TABLE {S}.documenti ADD COLUMN IF NOT EXISTS area TEXT"))
         c.execute(text(f"ALTER TABLE {S}.utenti ADD COLUMN IF NOT EXISTS limite_mensile INT"))
         c.execute(text(f"ALTER TABLE {S}.utenti ADD COLUMN IF NOT EXISTS citta_partenza TEXT"))
@@ -267,6 +288,8 @@ def accesso():
                         err.append("Nome utente o email già registrati.")
                 for e in err:
                     st.error(e)
+    st.divider()
+    st.caption(credito())
     return False
 
 
@@ -697,7 +720,25 @@ def pag_profilo():
 def pag_admin():
     st.title("Amministrazione")
     st.caption("L'amministratore gestisce iscritti e dati comuni. Non ha accesso ai documenti né ai registri dei corsisti.")
-    t1, t2, t3, t4, t5 = st.tabs(["Iscritti", "Calendario", "Insegnamenti", "Seminari", "Uso generazione testi"])
+    t1, t2, t3, t4, t5, t6 = st.tabs(["Iscritti", "Calendario", "Insegnamenti", "Seminari", "Uso generazione testi", "Spot pnev.it"])
+    with t6:
+        attivo = st.toggle("Mostra lo spot nella barra laterale", value=impostazione("spot_attivo", "1") == "1")
+        if attivo != (impostazione("spot_attivo", "1") == "1"):
+            run(f"INSERT INTO {S}.impostazioni VALUES ('spot_attivo', :v) ON CONFLICT (chiave) DO UPDATE SET valore=:v", v="1" if attivo else "0")
+            st.rerun()
+        c1, c2 = st.columns([1, 2])
+        firma = c1.text_input("Firma", value=impostazione("spot_firma", FIRMA_DEFAULT))
+        titoli = c2.text_input("Titoli professionali", value=impostazione("spot_titoli", TITOLI_DEFAULT))
+        if st.button("Salva firma"):
+            for k, v in (("spot_firma", firma), ("spot_titoli", titoli)):
+                run(f"INSERT INTO {S}.impostazioni VALUES (:k, :v) ON CONFLICT (chiave) DO UPDATE SET valore=:v", k=k, v=v.strip())
+            st.toast("Firma aggiornata.")
+        st.caption("I messaggi ruotano ogni 8 secondi nell’ordine indicato. Ai link viene aggiunta in automatico la sorgente "
+                   "«tfa-manager» per riconoscere le visite nelle statistiche di pnev.it; nessun dato dei corsisti viene raccolto.")
+        editor(q(f"SELECT * FROM {S}.spot ORDER BY ordine, id"), "adm_spot", lambda d: salva_comune("spot", d),
+               ordine=st.column_config.NumberColumn("Ordine", step=1), attivo=st.column_config.CheckboxColumn("Attivo"),
+               titolo="Titolo", testo=st.column_config.TextColumn("Testo", width="large"), pulsante="Pulsante",
+               link=st.column_config.LinkColumn("Link"))
     with t1:
         ut = q(f"SELECT id, username, nome, cognome, gruppo, email, ruolo, attivo, limite_mensile, creato_il, ultimo_accesso FROM {S}.utenti ORDER BY cognome")
         out = st.data_editor(ut, hide_index=True, width="stretch", key="adm_ut",
@@ -923,6 +964,72 @@ def pag_genera():
         st.dataframe(h, hide_index=True, width="stretch")
 
 
+# ================================================================ spot pnev.it
+def impostazione(chiave, default=""):
+    r = q(f"SELECT valore FROM {S}.impostazioni WHERE chiave=:k", k=chiave)
+    return r["valore"].iloc[0] if not r.empty else default
+
+
+def con_utm(link):
+    sep = "&" if "?" in link else "?"
+    return f"{link}{sep}utm_source=tfa-manager&utm_medium=app&utm_campaign=gruppo-c"
+
+
+def mostra_spot():
+    """Riquadro a rotazione nella barra laterale. Nessun tracciamento degli utenti: i link portano solo la sorgente (utm)."""
+    if impostazione("spot_attivo", "1") != "1":
+        return
+    sp = q(f"SELECT titolo, testo, pulsante, link FROM {S}.spot WHERE attivo ORDER BY ordine, id")
+    if sp.empty:
+        return
+    import html as _h
+    slides = "".join(
+        f"""<div class="sl{' on' if i == 0 else ''}"><b>{_h.escape(r['titolo'] or '')}</b><p>{_h.escape(r['testo'] or '')}</p>
+        <a href="{_h.escape(con_utm(r['link'] if str(r['link'] or '').startswith(('https://', 'http://')) else PNEV))}" target="_blank" rel="noopener">{_h.escape(r['pulsante'] or 'Scopri di più')}</a></div>"""
+        for i, (_, r) in enumerate(sp.iterrows()))
+    dots = "".join(f'<i class="{"on" if i == 0 else ""}"></i>' for i in range(len(sp)))
+    pagina = f"""
+<style>
+ body{{margin:0;font-family:"Source Sans Pro",system-ui,sans-serif}}
+ .box{{background:#fff;border:1px solid #c9cdf2;border-radius:10px;padding:12px 12px 10px;color:#1e2152;position:relative}}
+ .brand{{display:flex;align-items:center;gap:6px;font-size:12px;color:#4a4fa8;margin-bottom:6px}}
+ .ring{{width:14px;height:14px;border-radius:50%;background:radial-gradient(circle,#fff 38%,transparent 40%),conic-gradient(#3b5bdb,#5f3dc4,#3b5bdb)}}
+ .sl{{display:none}} .sl.on{{display:block;animation:f .5s}}
+ @keyframes f{{from{{opacity:0}}to{{opacity:1}}}}
+ b{{font-size:15px;display:block;margin-bottom:4px}}
+ p{{font-size:13px;line-height:1.4;margin:0 0 9px;color:#363a6b}}
+ a{{display:inline-block;background:#3b4cca;color:#fff;text-decoration:none;font-size:13px;font-weight:600;padding:6px 11px;border-radius:6px}}
+ a:focus-visible{{outline:2px solid #5f3dc4;outline-offset:2px}}
+ .dots{{margin-top:8px;display:flex;gap:5px}} .dots i{{width:6px;height:6px;border-radius:50%;background:#c9cdf2}} .dots i.on{{background:#3b4cca}}
+ .firma{{border-top:1px solid #e3e5fa;margin-top:9px;padding-top:7px;font-size:12px;line-height:1.35;color:#363a6b}}
+ .firma strong{{display:block;font-size:13px;color:#1e2152}}
+ @media (prefers-reduced-motion:reduce){{.sl.on{{animation:none}}}}
+</style>
+<div class="box" id="b"><div class="brand"><span class="ring"></span>www.pnev.it</div>{slides}<div class="dots">{dots}</div>
+<div class="firma"><strong>{_h.escape(impostazione("spot_firma", FIRMA_DEFAULT))}</strong><span>{_h.escape(impostazione("spot_titoli", TITOLI_DEFAULT))}</span></div></div>
+<script>
+ const s=[...document.querySelectorAll('.sl')], d=[...document.querySelectorAll('.dots i')]; let k=0, pausa=false;
+ const b=document.getElementById('b'); b.onmouseenter=()=>pausa=true; b.onmouseleave=()=>pausa=false;
+ const vai=n=>{{s[k].classList.remove('on');d[k].classList.remove('on');k=(n+s.length)%s.length;s[k].classList.add('on');d[k].classList.add('on');}};
+ d.forEach((x,i)=>x.onclick=()=>vai(i));
+ if(s.length>1) setInterval(()=>{{if(!pausa) vai(k+1)}}, 8000);
+</script>"""
+    if hasattr(st, "iframe"):          # Streamlit recente
+        st.iframe(pagina, height=295)
+    else:                              # versioni precedenti
+        import streamlit.components.v1 as components
+        components.html(pagina, height=295)
+
+
+def credito():
+    """Firma dell'autore dell'app (testi modificabili in Amministrazione → Spot pnev.it)."""
+    try:
+        firma, titoli = impostazione("spot_firma", FIRMA_DEFAULT), impostazione("spot_titoli", TITOLI_DEFAULT)
+    except Exception:
+        firma, titoli = FIRMA_DEFAULT, TITOLI_DEFAULT
+    return f"TFA Manager · ideato e realizzato da **{firma}** – {titoli} · [www.pnev.it](https://www.pnev.it/)"
+
+
 # ================================================================ avvio
 try:
     init_db()
@@ -946,4 +1053,6 @@ with st.sidebar:
     if st.button("Esci"):
         st.session_state.clear()
         st.rerun()
+    mostra_spot()
+    st.caption(credito())
 PAGINE[scelta]()
