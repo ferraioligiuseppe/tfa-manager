@@ -468,6 +468,52 @@ def salva_file(f, area, sotto, capitolo=None, note=""):
     return True
 
 
+def anteprima(nome: str, mime: str, b: bytes, key: str):
+    """Mostra il file dentro l'app: PDF, immagini, video, Word e testo."""
+    n = nome.lower()
+    if n.endswith(".pdf") or mime == "application/pdf":
+        try:
+            st.pdf(b, height=820, key=f"pdf_{key}")
+            return
+        except Exception:
+            pass  # visualizzatore non disponibile: mostro le pagine come immagini
+        try:
+            import pypdfium2 as pdfium
+            doc = pdfium.PdfDocument(b)
+            tot = len(doc)
+            pag = st.number_input(f"Pagina (1–{tot})", 1, tot, 1, key=f"pg_{key}") if tot > 1 else 1
+            st.image(doc[int(pag) - 1].render(scale=1.6).to_pil(), width="stretch")
+        except Exception as e:
+            st.warning(f"Anteprima non disponibile per questo PDF ({e}). Usa «Scarica».")
+    elif n.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp")):
+        st.image(b, width="stretch")
+    elif n.endswith((".mp4", ".webm", ".mov")):
+        st.video(b)
+    elif n.endswith((".mp3", ".wav", ".m4a")):
+        st.audio(b)
+    elif n.endswith(".docx"):
+        from docx import Document
+        d = Document(io.BytesIO(b))
+        with st.container(border=True, height=700):
+            for p in d.paragraphs:
+                if not p.text.strip():
+                    continue
+                stile = ((p.style.name if p.style is not None else "") or "").lower()
+                if stile.startswith("heading 1") or stile == "title":
+                    st.markdown(f"### {p.text}")
+                elif stile.startswith("heading"):
+                    st.markdown(f"**{p.text}**")
+                else:
+                    st.write(p.text)
+            for t in d.tables:
+                st.dataframe(pd.DataFrame([[c.text for c in r.cells] for r in t.rows]), hide_index=True)
+    elif n.endswith((".txt", ".md", ".csv")):
+        with st.container(border=True, height=600):
+            st.text(b.decode("utf-8", errors="ignore"))
+    else:
+        st.info("Per questo tipo di file l’anteprima non è disponibile: usa «Scarica».")
+
+
 def elenco_file(docs, key):
     """Tabella dei file con apertura, download ed eliminazione."""
     if docs.empty:
@@ -483,6 +529,8 @@ def elenco_file(docs, key):
     r = q(f"SELECT nome_file, mime, contenuto FROM {S}.documenti WHERE id=:i AND utente_id=:u", i=int(scelta), u=uid()).iloc[0]
     c1, c2 = st.columns(2)
     c1.download_button("Scarica", bytes(r["contenuto"]), file_name=r["nome_file"], mime=r["mime"], type="primary", key=f"dl_{key}")
+    if st.toggle("Visualizza qui", key=f"vis_{key}", value=True):
+        anteprima(r["nome_file"], r["mime"], bytes(r["contenuto"]), f"d{key}_{scelta}")
     if c2.button("Elimina", key=f"del_{key}"):
         run(f"DELETE FROM {S}.documenti WHERE id=:i AND utente_id=:u", i=int(scelta), u=uid())
         st.toast("Documento eliminato.")
@@ -726,6 +774,8 @@ def pag_materiali():
                 if editore and c2.button("Elimina dal corso", key=f"mdel_{k}"):
                     run(f"DELETE FROM {S}.materiali WHERE id=:i", i=int(scelta))
                     st.rerun()
+                if st.toggle("Visualizza qui", key=f"mvis_{k}", value=True):
+                    anteprima(r["nome_file"], r["mime"], bytes(r["contenuto"]), f"m{k}_{scelta}")
 
 
 def pag_tesi():
