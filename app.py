@@ -547,6 +547,57 @@ def pag_documenti():
     st.progress(min(usato / QUOTA_MB, 1.0), text=f"{usato:.1f} MB su {QUOTA_MB} MB")
     conteggi = meta.groupby("area").size().to_dict() if not meta.empty else {}
 
+    with st.expander("Importa molti file insieme (cartella Dropbox o zip)", expanded=meta.empty):
+        st.markdown("L’app legge la cartella e propone dove mettere ogni file: insegnamento dal nome del docente o del file, "
+                    "**moduli ed esercitazioni** in «Moduli didattica asincrona», **lezioni e slide** in «Slide e materiali di studio», "
+                    "**i tuoi elaborati** in «Elaborati e consegne», **piano carriera, ricevute e simili** in «Documenti personali». "
+                    "Controlli la tabella e confermi. Chiavi, password e file di codice vengono esclusi.")
+        fonte = st.radio("Da dove prendo i file?", ["Link di una cartella Dropbox (consigliato)", "Zip dal computer"],
+                         horizontal=True, key="dimp_fonte")
+        if fonte.startswith("Link"):
+            st.caption("Su Dropbox: tasto destro sulla cartella → Condividi → Copia link (chiunque abbia il link). "
+                       "Dopo l’importazione puoi eliminare il link.")
+            link = st.text_input("Link della cartella Dropbox", key="dimp_link", placeholder="https://www.dropbox.com/scl/fo/…")
+            if st.button("Leggi la cartella", key="dimp_go") and link.strip():
+                try:
+                    with st.spinner("Scarico la cartella da Dropbox…"):
+                        dati = scarica_dropbox(link.strip())
+                    df, cont = leggi_zip(dati, classifica_personale, ESCLUSI_PERSONALI)
+                    st.session_state.update(dimp_df=df, dimp_cont=cont)
+                except Exception as e:
+                    st.error(f"Download non riuscito: {e}")
+        else:
+            z = st.file_uploader("File .zip", type=["zip"], key="dimp_zip")
+            if z is not None and st.session_state.get("dimp_nome") != z.name:
+                try:
+                    df, cont = leggi_zip(z.getvalue(), classifica_personale, ESCLUSI_PERSONALI)
+                    st.session_state.update(dimp_nome=z.name, dimp_df=df, dimp_cont=cont)
+                except zipfile.BadZipFile:
+                    st.error("Il file non è uno zip valido.")
+        df = st.session_state.get("dimp_df")
+        if df is not None and not df.empty:
+            tutte = [a for v in AREE.values() for a in v]
+            out = st.data_editor(df, hide_index=True, width="stretch", key="dimp_ed", disabled=["file", "percorso", "MB"],
+                                 column_config={"sha1": None, "importa": st.column_config.CheckboxColumn("Importa"),
+                                                "area": st.column_config.SelectboxColumn("Cartella", options=tutte, width="large"),
+                                                "sottocartella": st.column_config.SelectboxColumn("Sottocartella", options=SOTTOCARTELLE + ["Documenti"])})
+            sel = out[out["importa"]]
+            st.caption(f"{len(sel)} file selezionati su {len(out)} · {sel['MB'].sum():.1f} MB · spazio libero {QUOTA_MB - usato:.0f} MB")
+            if st.button(f"Importa {len(sel)} file nei miei documenti", type="primary", disabled=sel.empty, key="dimp_ok"):
+                cont, n = st.session_state["dimp_cont"], 0
+                bar = st.progress(0.0)
+                for i, (_, r) in enumerate(sel.iterrows()):
+                    b, mime = cont[r["sha1"]]
+                    sotto = "Documenti" if r["area"] in GENERALI else (r["sottocartella"] if r["sottocartella"] != "Documenti" else "Altro")
+                    gia = q(f"SELECT 1 FROM {S}.documenti WHERE utente_id=:u AND nome_file=:n AND dimensione=:d", u=uid(), n=r["file"], d=len(b))
+                    if gia.empty and salva_file({"bytes": b, "name": r["file"], "mime": mime}, r["area"], sotto, None, f"Importato da {r['percorso']}"):
+                        n += 1
+                    bar.progress((i + 1) / len(sel), text=r["file"])
+                st.toast(f"Importati {n} file nei tuoi documenti.")
+                for k in ("dimp_df", "dimp_cont", "dimp_nome"):
+                    st.session_state.pop(k, None)
+                st.rerun()
+
     nav, main = st.columns([1, 2.6], gap="large")
     with nav:
         gruppo = st.radio("Sezione", list(AREE), key="doc_gruppo")
@@ -608,7 +659,33 @@ def classifica(percorso: str):
     return importa, area, sotto
 
 
-def leggi_zip(dati: bytes):
+ESCLUSI_PERSONALI = ["chiave", "gestionale", "tfa-manager", "__macosx", "/.", "api_key", "password"]
+
+
+def classifica_personale(percorso: str):
+    """Come classifica(), ma per l'archivio personale: tiene anche elaborati e documenti privati."""
+    p = "/" + percorso.lower().replace("\\", "/")
+    nome = p.rsplit("/", 1)[-1]
+    est = nome.rsplit(".", 1)[-1] if "." in nome else ""
+    importa = not any(x in p for x in ESCLUSI_PERSONALI) and est in (
+        "pdf", "docx", "doc", "pptx", "ppt", "xlsx", "odt", "jpg", "jpeg", "png", "mp4", "mp3", "txt", "md")
+    if any(k in p for k in ("piano_carriera", "iban", "esa ferraioli", "qrcode", "passaporto", "ricevuta", "bonifico")):
+        return importa, "Documenti personali", "Documenti"
+    if "registri" in nome:
+        return importa, "Registri e firme", "Documenti"
+    if "relazione finale" in nome or "relazione_finale" in nome:
+        return importa, "Relazione finale", "Documenti"
+    if "ptof" in nome or "tirocinio_indiretto" in nome or "tirocinio indiretto" in p:
+        return importa, ATTIVITA[1], "Elaborati e consegne" if "ferraioli" in nome or "/ai/" in p else "Slide e materiali di studio"
+    _, area, sotto = classifica(percorso)
+    if "/ai/" in p or "ferraioli_giuseppe" in nome or "elaborat" in nome:
+        sotto = "Elaborati e consegne"
+    if area == COMUNICAZIONI:
+        area, sotto = "Altro", "Documenti"
+    return importa, area, sotto
+
+
+def leggi_zip(dati: bytes, classificatore=None, esclusi=None):
     """Estrae i file dallo zip (anche dagli zip annidati, un livello) senza duplicati."""
     import hashlib, mimetypes
     visti, righe, contenuti = set(), [], {}
@@ -621,7 +698,7 @@ def leggi_zip(dati: bytes):
                 nome_pieno = prefisso + info.filename
                 b = z.read(info)
                 if nome_pieno.lower().endswith(".zip") and not prefisso:
-                    if any(x in "/" + nome_pieno.lower() for x in ESCLUSI):
+                    if any(x in "/" + nome_pieno.lower() for x in (esclusi if esclusi is not None else ESCLUSI)):
                         continue  # archivi personali: non si aprono nemmeno
                     try:
                         scorri(b, nome_pieno[:-4] + "/")
@@ -632,7 +709,7 @@ def leggi_zip(dati: bytes):
                 if h in visti:
                     continue
                 visti.add(h)
-                imp, area, sotto = classifica(nome_pieno)
+                imp, area, sotto = (classificatore or classifica)(nome_pieno)
                 if len(b) > MAX_MATERIALE_MB * 1e6:
                     imp = False
                 righe.append({"importa": imp, "file": nome_pieno.rsplit("/", 1)[-1], "percorso": nome_pieno,
