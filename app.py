@@ -1308,12 +1308,18 @@ def smartlearn_login():
     s.headers["User-Agent"] = "Mozilla/5.0 (TFA-Manager)"
     # 1) la home protetta porta alla pagina di login di Moodle, che offre due vie:
     #    un modulo diretto e il pulsante «Login Portale» (SSO dell'ateneo). Seguiamo il portale.
+    tappe = st.session_state.setdefault("sl_tappe", [])
+    tappe.clear()
     r = s.get(f"{SMARTLEARN_BASE}/my/", timeout=60)
+    tappe.append(f"1) home → {r.url[:70]}")
     if "idp.unilink.it" not in r.url:
         m = re.search(r'href="([^"]*/auth/[^"]*)"[^>]*>\s*Login Portale', r.text, re.I) or \
             re.search(r'href="([^"]*(?:saml|shibboleth|oauth)[^"]*)"', r.text, re.I)
         if m:
             r = s.get(urljoin(r.url, m.group(1).replace("&amp;", "&")), timeout=60)
+            tappe.append(f"2) Login Portale → {r.url[:70]}")
+        else:
+            tappe.append("2) «Login Portale» non trovato nella pagina")
     for _ in range(6):  # seguo i passaggi del login finché non torno su Smart Learn
         soup = BeautifulSoup(r.text, "html.parser")
         # scelgo il modulo che contiene un campo password (evito moduli di lingua/ricerca)
@@ -1343,11 +1349,19 @@ def smartlearn_login():
                 dati[nome] = user
             else:
                 dati[nome] = i.get("value", "")
+        campi = "+".join(k for k in dati if not any(x in k.lower() for x in ("pass", "saml", "relay")))
         r = s.post(azione, data=dati, timeout=60)
+        tappe.append(f"3) invio modulo (campi: {campi}) → {r.url[:70]}")
         if SMARTLEARN_BASE in r.url and "idp" not in r.url:
             break
     if "idp.unilink.it" in r.url or "login" in r.url.lower():
-        raise ValueError("login non riuscito: controlla username e password nei Secrets")
+        import re as _re
+        msg = ""
+        for pat in (r'class="[^"]*(?:error|alert)[^"]*"[^>]*>\s*([^<]{3,120})', r'<p[^>]*error[^>]*>\s*([^<]{3,120})'):
+            m = _re.search(pat, r.text, _re.I)
+            if m:
+                msg = " · la pagina dice: " + m.group(1).strip(); break
+        raise ValueError("login non riuscito (le credenziali sono state rifiutate dall'ateneo)" + msg)
     return s
 
 
@@ -1411,6 +1425,10 @@ def tab_smartlearn():
             st.success(f"Connesso: trovati {len(st.session_state['sl_corsi'])} corsi.")
         except Exception as e:
             st.error(f"Connessione non riuscita: {e}")
+            if st.session_state.get("sl_tappe"):
+                with st.expander("Dettaglio tecnico (nessuna password mostrata)"):
+                    for t in st.session_state["sl_tappe"]:
+                        st.text(t)
     corsi = st.session_state.get("sl_corsi")
     if corsi:
         scelti = st.multiselect("Corsi da importare", list(corsi), format_func=lambda c: corsi[c], default=list(corsi))
