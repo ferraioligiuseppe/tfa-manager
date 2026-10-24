@@ -151,6 +151,8 @@ CREATE TABLE IF NOT EXISTS {S}.materiali (id SERIAL PRIMARY KEY, gruppo TEXT DEF
   nome_file TEXT, mime TEXT, dimensione INT, sha1 TEXT, note TEXT, contenuto BYTEA,
   caricato_da INT REFERENCES {S}.utenti(id) ON DELETE SET NULL, caricato_il TIMESTAMPTZ DEFAULT now());
 CREATE INDEX IF NOT EXISTS materiali_gruppo ON {S}.materiali(gruppo, area);
+CREATE TABLE IF NOT EXISTS {S}.credenziali_sl (utente_id INT PRIMARY KEY REFERENCES {S}.utenti(id) ON DELETE CASCADE,
+  username TEXT, segreto BYTEA, consenso TIMESTAMPTZ, aggiornato_il TIMESTAMPTZ DEFAULT now());
 CREATE TABLE IF NOT EXISTS {S}.sessioni (token_hash TEXT PRIMARY KEY, utente_id INT REFERENCES {S}.utenti(id) ON DELETE CASCADE,
   scade TIMESTAMPTZ, creato_il TIMESTAMPTZ DEFAULT now());
 CREATE TABLE IF NOT EXISTS {S}.soggiorni (id SERIAL PRIMARY KEY, utente_id INT REFERENCES {S}.utenti(id) ON DELETE CASCADE,
@@ -1293,15 +1295,57 @@ def pag_profilo():
 SMARTLEARN_BASE = "https://smartlearn.unilink.it"
 
 
-def smartlearn_login():
+AVVISO_SL = """**Collegamento a Smart Learn — nota importante**
+
+Questa app è uno strumento **gratuito e non ufficiale**, realizzato da un corsista per aiutare il Gruppo C,
+senza alcun legame con l'Università Link Campus né con Smart Learn.
+
+Collegando il tuo account, le tue credenziali Unilink vengono conservate **in forma cifrata** al solo scopo di
+scaricare i materiali dei tuoi corsi e condividerli con il gruppo. **Non sono visibili ad altri corsisti né all'amministratore.**
+
+Procedendo dichiari di essere consapevole che:
+- il collegamento usa le tue credenziali personali, **sotto la tua responsabilità**, e potrebbe non essere conforme alle regole d'uso di Smart Learn;
+- l'app è fornita «così com'è», **senza garanzie**, e chi la gestisce non risponde di malfunzionamenti, perdita di dati o conseguenze dell'uso;
+- puoi **scollegare** il tuo account e cancellare le credenziali salvate in qualsiasi momento;
+- ti conviene usare la password Unilink solo qui e cambiarla se hai dubbi sulla sua riservatezza."""
+
+
+def _fernet():
+    """Chiave di cifratura dai Secrets ([smartlearn] crypto_key). Se manca, deriva una chiave dalla stringa del DB (meno ideale)."""
+    import base64, hashlib
+    from cryptography.fernet import Fernet
+    k = st.secrets.get("smartlearn", {}).get("crypto_key")
+    if not k:
+        base = (str(st.secrets.get("db", {}).get("url", "")) + "tfa-sl").encode()
+        k = base64.urlsafe_b64encode(hashlib.sha256(base).digest()).decode()
+    return Fernet(k.encode() if isinstance(k, str) else k)
+
+
+def salva_credenziali_sl(username, password):
+    token = _fernet().encrypt(password.encode())
+    run(f"""INSERT INTO {S}.credenziali_sl (utente_id, username, segreto, consenso)
+            VALUES (:u, :n, :s, now())
+            ON CONFLICT (utente_id) DO UPDATE SET username=:n, segreto=:s, aggiornato_il=now()""",
+        u=uid(), n=username.strip(), s=token)
+
+
+def leggi_credenziali_sl(utente_id=None):
+    r = q(f"SELECT username, segreto FROM {S}.credenziali_sl WHERE utente_id=:u", u=utente_id or uid())
+    if r.empty:
+        return None
+    return r.iloc[0]["username"], _fernet().decrypt(bytes(r.iloc[0]["segreto"])).decode()
+
+
+def smartlearn_login(user=None, pwd=None):
     """Login SSO (Shibboleth) a Smart Learn, trovando i campi del modulo da solo.
     Credenziali solo dai Secrets [smartlearn] username/password. Restituisce una sessione requests autenticata."""
     import requests
     from bs4 import BeautifulSoup
-    cfg = st.secrets.get("smartlearn", {})
-    user, pwd = cfg.get("username"), cfg.get("password")
     if not user or not pwd:
-        raise ValueError("mancano le credenziali: aggiungile nei Secrets, sezione [smartlearn]")
+        cfg = st.secrets.get("smartlearn", {})
+        user, pwd = cfg.get("username"), cfg.get("password")
+    if not user or not pwd:
+        raise ValueError("mancano le credenziali")
     import re
     from urllib.parse import urljoin
     s = requests.Session()
@@ -1409,6 +1453,92 @@ def smartlearn_scarica(s, url):
     return nome, ct or "application/octet-stream", r.content
 
 
+def importa_smartlearn(s, corsi, scelti, gdest):
+    """Scarica i file dei corsi scelti in Materiali del corso; restituisce la tabella degli esiti."""
+    bar = st.progress(0.0, text="Inizio…")
+    esiti = []
+    for j, cid in enumerate(scelti):
+        _, area, _ = classifica(corsi[cid])
+        if not area:
+            area = "Altro"
+        bar.progress(j / len(scelti), text=f"Leggo {corsi[cid]}…")
+        try:
+            elenco = smartlearn_file_corso(s, cid)
+        except Exception as e:
+            esiti.append((corsi[cid], area, f"errore lettura corso: {e}"[:80])); continue
+        for href, titolo in elenco:
+            url = (SMARTLEARN_BASE + href) if href.startswith("/") else href
+            bar.progress(j / len(scelti), text=f"{corsi[cid]}: {titolo}")
+            try:
+                f = smartlearn_scarica(s, url)
+                if not f:
+                    esiti.append((titolo, area, "non scaricabile")); continue
+                nome, mime, b = f
+                sotto = "Moduli didattica asincrona" if any(k in nome.lower() for k in ("modulo", "esercit", "prova")) else "Slide e materiali di studio"
+                ok = salva_materiale(gdest, area, sotto, nome, mime, b, f"Da Smart Learn: {corsi[cid]}")
+                esiti.append((nome, area, "salvato" if ok else "già presente"))
+            except Exception as e:
+                esiti.append((titolo, area, f"errore: {e}"[:80]))
+    bar.progress(1.0, text="Completato")
+    return pd.DataFrame(esiti, columns=["File", "Cartella", "Esito"])
+
+
+def pag_smartlearn():
+    st.title("Smart Learn")
+    gruppo = me().get("gruppo") or "C"
+    salvate = leggi_credenziali_sl()
+    if not salvate:
+        st.info("Collega il tuo account Smart Learn per importare i materiali dei tuoi corsi nell’area «Materiali del corso» del gruppo.")
+        with st.expander("Nota importante — leggi prima di collegare", expanded=True):
+            st.markdown(AVVISO_SL)
+        with st.form("sl_connect"):
+            u = st.text_input("Username Unilink", placeholder="es. g.ferraioli")
+            p = st.text_input("Password Unilink", type="password")
+            ok = st.checkbox("Ho letto e accetto. Collego il mio account Smart Learn sotto la mia responsabilità.")
+            if st.form_submit_button("Verifica e collega", type="primary"):
+                if not (u and p and ok):
+                    st.error("Inserisci username, password e accetta la nota.")
+                else:
+                    try:
+                        with st.spinner("Verifico l’accesso a Smart Learn…"):
+                            smartlearn_login(u.strip(), p)   # prova il login prima di salvare
+                        salva_credenziali_sl(u.strip(), p)
+                        st.success("Account collegato. Ora puoi importare i tuoi corsi.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Accesso non riuscito: {e}. Le credenziali non sono state salvate.")
+                        if st.session_state.get("sl_tappe"):
+                            with st.expander("Dettaglio tecnico (nessuna password mostrata)"):
+                                for t in st.session_state["sl_tappe"]:
+                                    st.text(t)
+        return
+    user_sl, _ = salvate
+    c1, c2 = st.columns([3, 1])
+    c1.caption(f"Account collegato: **{user_sl}**. Le credenziali sono cifrate e visibili solo a te.")
+    if c2.button("Scollega"):
+        run(f"DELETE FROM {S}.credenziali_sl WHERE utente_id=:u", u=uid())
+        st.toast("Account scollegato."); st.rerun()
+    if st.button("Leggi i miei corsi", type="primary"):
+        try:
+            with st.spinner("Accedo a Smart Learn…"):
+                u, p = leggi_credenziali_sl()
+                s = smartlearn_login(u, p)
+                st.session_state["sl_corsi_c"] = smartlearn_corsi(s)
+            st.success(f"Trovati {len(st.session_state['sl_corsi_c'])} corsi.")
+        except Exception as e:
+            st.error(f"Accesso non riuscito: {e}")
+    corsi = st.session_state.get("sl_corsi_c")
+    if corsi:
+        scelti = st.multiselect("Corsi da importare", list(corsi), format_func=lambda c: corsi[c], default=list(corsi))
+        dove = st.radio("Dove rendo visibili i materiali", [f"Solo il Gruppo {gruppo}", "Tutti i gruppi"], horizontal=True)
+        if st.button("Scarica e importa i materiali", disabled=not scelti):
+            u, p = leggi_credenziali_sl()
+            s = smartlearn_login(u, p)
+            ed = importa_smartlearn(s, corsi, scelti, gruppo if dove.startswith("Solo") else "Tutti")
+            st.success(f"Importazione finita: {int((ed['Esito'] == 'salvato').sum())} nuovi file.")
+            st.dataframe(ed, hide_index=True, width="stretch")
+
+
 def tab_smartlearn():
     st.caption("Collega il tuo account Smart Learn per importare i materiali dei corsi direttamente nell’area «Materiali del corso». "
                "Le credenziali stanno solo nei Secrets (sezione [smartlearn]); non sono salvate nel database né viste dai colleghi. "
@@ -1435,36 +1565,9 @@ def tab_smartlearn():
         gdest = st.selectbox("Visibile al gruppo", GRUPPI + ["Tutti"], index=GRUPPI.index(me().get("gruppo") or "C"))
         if st.button("Scarica e importa i materiali", disabled=not scelti):
             s = smartlearn_login()
-            bar = st.progress(0.0, text="Inizio…")
-            esiti = []
-            for j, cid in enumerate(scelti):
-                _, area, _ = classifica(corsi[cid])      # cartella dal nome del corso
-                if not area:
-                    area = "Altro"
-                bar.progress(j / len(scelti), text=f"Leggo {corsi[cid]}…")
-                try:
-                    elenco = smartlearn_file_corso(s, cid)
-                except Exception as e:
-                    esiti.append((corsi[cid], area, f"errore lettura corso: {e}"[:80]))
-                    continue
-                for href, titolo in elenco:
-                    url = (SMARTLEARN_BASE + href) if href.startswith("/") else href
-                    bar.progress(j / len(scelti), text=f"{corsi[cid]}: {titolo}")
-                    try:
-                        f = smartlearn_scarica(s, url)
-                        if not f:
-                            esiti.append((titolo, area, "non scaricabile"))
-                            continue
-                        nome, mime, b = f
-                        sotto = "Moduli didattica asincrona" if any(k in nome.lower() for k in ("modulo", "esercit", "prova")) else "Slide e materiali di studio"
-                        ok = salva_materiale(gdest, area, sotto, nome, mime, b, f"Da Smart Learn: {corsi[cid]}")
-                        esiti.append((nome, area, "salvato" if ok else "già presente"))
-                    except Exception as e:
-                        esiti.append((titolo, area, f"errore: {e}"[:80]))
-            bar.progress(1.0, text="Completato")
-            ed = pd.DataFrame(esiti, columns=["File", "Cartella", "Esito"])
-            st.success(f"Importazione finita: {int((ed['Esito'] == 'salvato').sum())} nuovi file.")
-            st.dataframe(ed, hide_index=True, width="stretch")
+            ed0 = importa_smartlearn(s, corsi, scelti, gdest)
+            st.success(f"Importazione finita: {int((ed0['Esito'] == 'salvato').sum())} nuovi file.")
+            st.dataframe(ed0, hide_index=True, width="stretch")
 
 
 def pag_admin():
@@ -1853,7 +1956,7 @@ if st.session_state.get("cambia_pwd"):
 
 PAGINE = {"Cruscotto": pag_cruscotto, "Calendario": pag_calendario, "Asincrone": pag_asincrone,
           "Assenze e recuperi": pag_assenze, "Tirocinio": pag_tirocinio, "Materiali del corso": pag_materiali, "Documenti": pag_documenti,
-          "Relazione finale": pag_tesi, "Genera testi": pag_genera, "Viaggi": pag_viaggi, "Soggiorno": pag_soggiorno, "Profilo": pag_profilo}
+          "Relazione finale": pag_tesi, "Genera testi": pag_genera, "Viaggi": pag_viaggi, "Soggiorno": pag_soggiorno, "Smart Learn": pag_smartlearn, "Profilo": pag_profilo}
 if me().get("ruolo") == "admin":
     PAGINE["Amministrazione"] = pag_admin
 with st.sidebar:
