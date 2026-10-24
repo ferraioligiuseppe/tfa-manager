@@ -1992,6 +1992,43 @@ def registra_generazione(tipo, richiesta, testo):
             VALUES (:u,:t,:r,:x,:c,:i,:o)""", u=uid(), t=tipo, r=richiesta[:4000], x=testo, c=len(testo), i=tin, o=tout)
 
 
+def estrai_bytes(b, nome):
+    """Estrae testo da un contenuto (bytes) di PDF, Word o testo."""
+    nome = nome.lower()
+    try:
+        if nome.endswith(".pdf"):
+            from pypdf import PdfReader
+            return "\n".join((p.extract_text() or "") for p in PdfReader(io.BytesIO(b)).pages)
+        if nome.endswith(".docx"):
+            from docx import Document
+            return "\n".join(p.text for p in Document(io.BytesIO(b)).paragraphs)
+        return b.decode("utf-8", errors="ignore")
+    except Exception:
+        return ""
+
+
+def traccia_da_materiali(insegnamento: str) -> str:
+    """Cerca nei materiali del corso e nei documenti personali il modulo/esercitazione di quell'insegnamento
+    e ne estrae il testo, per proporlo come traccia. Restituisce stringa vuota se non trova nulla."""
+    area = UFFICIALE.get(insegnamento)
+    if not area:
+        return ""
+    gruppi = [me().get("gruppo") or "C", "Tutti"]
+    # 1) materiali del corso, sottocartella "Moduli didattica asincrona"
+    r = q(f"""SELECT nome_file, contenuto FROM {S}.materiali
+             WHERE area=:a AND gruppo = ANY(:g) AND categoria='Moduli didattica asincrona'
+             ORDER BY caricato_il DESC LIMIT 1""", a=area, g=gruppi)
+    # 2) in mancanza, un mio documento nella stessa cartella
+    if r.empty:
+        r = q(f"""SELECT nome_file, contenuto FROM {S}.documenti
+                 WHERE utente_id=:u AND area=:a AND categoria='Moduli didattica asincrona'
+                 ORDER BY caricato_il DESC LIMIT 1""", u=uid(), a=area)
+    if r.empty:
+        return ""
+    testo = estrai_bytes(bytes(r.iloc[0]["contenuto"]), r.iloc[0]["nome_file"]).strip()
+    return testo[:8000]
+
+
 def pag_genera():
     st.title("Genera testi")
     cfg = st.secrets.get("ai", {})
@@ -2010,7 +2047,18 @@ def pag_genera():
     etichetta = {"Elaborato asincrono": "Traccia dell'esercitazione", "Capitolo della relazione finale": "I tuoi appunti per questo capitolo",
                  "Osservazione descrittiva": "Le tue note grezze", "Email a docente o segreteria": "Che cosa vuoi comunicare",
                  "Riassunto di un documento": "Su che cosa concentrarsi (facoltativo)", "Testo libero": "Richiesta"}[tipo]
-    traccia = st.text_area(etichetta, height=180)
+    if tipo == "Elaborato asincrono":
+        cc1, cc2 = st.columns([3, 1])
+        cc1.caption("Puoi incollare la traccia, oppure caricarla dai materiali di quel docente se li hai importati.")
+        if cc2.button("Carica la traccia dai materiali"):
+            t = traccia_da_materiali(insegnamento)
+            if t:
+                st.session_state["traccia_auto"] = t
+                st.toast("Traccia caricata dai materiali: controllala e correggi se serve.")
+            else:
+                st.warning("Nessun modulo trovato per questo insegnamento in «Materiali del corso» o nei tuoi documenti. "
+                           "Controlla che il file del modulo sia nella sottocartella «Moduli didattica asincrona».")
+    traccia = st.text_area(etichetta, height=180, value=st.session_state.pop("traccia_auto", ""))
     fonti = st.multiselect("Usa come fonte i miei documenti (facoltativo)", docs["id"].tolist(),
                            format_func=lambda i: (lambda r: f"{r['nome_file']} v{r['versione']} · {r['categoria']}")(docs.set_index("id").loc[i]),
                            max_selections=3)
