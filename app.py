@@ -176,39 +176,67 @@ def aggiungi_colonna(c, tabella, definizione):
         c.execute(text(f"ALTER TABLE {S}.{tabella} ADD COLUMN IF NOT EXISTS {definizione}"))
 
 
+# elenco completo delle colonne aggiunte dopo la prima versione: verificato a OGNI avvio
+MIGRAZIONI_COLONNE = {
+    "documenti": ["area TEXT"],
+    "utenti": ["limite_mensile INT", "citta_partenza TEXT", "pwd_temporanea BOOLEAN DEFAULT FALSE",
+               "referente BOOLEAN DEFAULT FALSE", "firma TEXT"],
+    "viaggi": ["data DATE", "partenza TEXT", "destinazione TEXT", "mezzo TEXT", "dettaglio TEXT",
+               "creato_il TIMESTAMPTZ DEFAULT now()"],
+}
+
+
+TABELLE_EXTRA = [
+    f"""CREATE TABLE IF NOT EXISTS {S}.tirocinio_doc (id SERIAL PRIMARY KEY,
+        utente_id INT REFERENCES {S}.utenti(id) ON DELETE CASCADE, tipo TEXT, scuola TEXT, classe TEXT,
+        alunno TEXT, data_incontro DATE, contenuto JSONB, creato_il TIMESTAMPTZ DEFAULT now())""",
+]
+
+
+def migra_schema(c):
+    """Crea tabelle mancanti e aggiunge colonne mancanti. Idempotente e veloce: si può eseguire a ogni avvio."""
+    for stmt in DDL.split(";"):
+        if stmt.strip():
+            c.execute(text(stmt))
+    for stmt in TABELLE_EXTRA:
+        c.execute(text(stmt))
+    for tabella, colonne in MIGRAZIONI_COLONNE.items():
+        for definizione in colonne:
+            aggiungi_colonna(c, tabella, definizione)
+
+
+def popola_iniziale(c):
+    """Dati di partenza: solo la prima volta (quando le tabelle sono vuote)."""
+    if not c.execute(text(f"SELECT COUNT(*) FROM {S}.spot")).scalar():
+        pd.DataFrame(SPOT_DEFAULT).to_sql("spot", c, schema=S, if_exists="append", index=False)
+        c.execute(text(f"INSERT INTO {S}.impostazioni VALUES ('spot_attivo','1') ON CONFLICT DO NOTHING"))
+    if c.execute(text(f"SELECT COUNT(*) FROM {S}.insegnamenti")).scalar():
+        c.execute(text(f"""INSERT INTO {S}.insegnamenti (nome, docente, email, ore)
+            VALUES ('Legislazione scolastica', '', '', 25) ON CONFLICT (nome) DO NOTHING"""))
+        return
+    d = seed()
+    pd.DataFrame(d["insegnamenti"] + [{"nome": "Legislazione scolastica", "docente": "", "email": "", "ore": 25}]).to_sql(
+        "insegnamenti", c, schema=S, if_exists="append", index=False)
+    pd.DataFrame(d["lezioni"]).assign(gruppo="C").to_sql("lezioni", c, schema=S, if_exists="append", index=False)
+    pd.DataFrame(d["seminari"]).to_sql("seminari", c, schema=S, if_exists="append", index=False)
+    pd.DataFrame(d["monte_ore"]).to_sql("monte_ore", c, schema=S, if_exists="append", index=False)
+
+
 @st.cache_resource(show_spinner=False)
-def init_db(versione: str = ""):
-    """Eseguita una volta per ogni versione dello schema; il lock evita che due sessioni la eseguano insieme.
-    Se il codice cambia (nuove tabelle o colonne), cambia la versione e la verifica riparte da sola."""
+def _popola_una_volta():
+    """Il seed gira una volta per processo (è cache_resource); lo schema no, vedi avvia_db()."""
     with engine().begin() as c:
         c.execute(text("SELECT pg_advisory_xact_lock(724501)"))
-        _init_db(c)
+        popola_iniziale(c)
     return True
 
 
-def _init_db(c):
-    if True:
-        for stmt in DDL.split(";"):
-            if stmt.strip():
-                c.execute(text(stmt))
-        if not c.execute(text(f"SELECT COUNT(*) FROM {S}.spot")).scalar():
-            pd.DataFrame(SPOT_DEFAULT).to_sql("spot", c, schema=S, if_exists="append", index=False)
-            c.execute(text(f"INSERT INTO {S}.impostazioni VALUES ('spot_attivo','1') ON CONFLICT DO NOTHING"))
-        aggiungi_colonna(c, "documenti", "area TEXT")
-        for col in ("limite_mensile INT", "citta_partenza TEXT", "pwd_temporanea BOOLEAN DEFAULT FALSE", "referente BOOLEAN DEFAULT FALSE"):
-            aggiungi_colonna(c, "utenti", col)
-        for col in ("data DATE", "partenza TEXT", "destinazione TEXT", "mezzo TEXT", "dettaglio TEXT", "creato_il TIMESTAMPTZ DEFAULT now()"):
-            aggiungi_colonna(c, "viaggi", col)
-        if c.execute(text(f"SELECT COUNT(*) FROM {S}.insegnamenti")).scalar():
-            c.execute(text(f"""INSERT INTO {S}.insegnamenti (nome, docente, email, ore)
-                VALUES ('Legislazione scolastica', '', '', 25) ON CONFLICT (nome) DO NOTHING"""))
-            return
-        d = seed()
-        pd.DataFrame(d["insegnamenti"] + [{"nome": "Legislazione scolastica", "docente": "", "email": "", "ore": 25}]).to_sql(
-            "insegnamenti", c, schema=S, if_exists="append", index=False)
-        pd.DataFrame(d["lezioni"]).assign(gruppo="C").to_sql("lezioni", c, schema=S, if_exists="append", index=False)
-        pd.DataFrame(d["seminari"]).to_sql("seminari", c, schema=S, if_exists="append", index=False)
-        pd.DataFrame(d["monte_ore"]).to_sql("monte_ore", c, schema=S, if_exists="append", index=False)
+def avvia_db():
+    """Migrazione a OGNI avvio (veloce, niente cache), seed una volta sola."""
+    with engine().begin() as c:
+        c.execute(text("SELECT pg_advisory_xact_lock(724501)"))
+        migra_schema(c)
+    _popola_una_volta()
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -2046,8 +2074,7 @@ def password_provvisoria():
 
 # ================================================================ avvio
 try:
-    import hashlib as _hl
-    init_db(_hl.md5((DDL + "|v5").encode()).hexdigest())
+    avvia_db()
 except Exception as e:
     st.error(f"Connessione al database non riuscita: {e}")
     if "deadlock" in str(e).lower() or "lock" in str(e).lower():
