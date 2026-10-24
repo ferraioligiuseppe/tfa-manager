@@ -1380,7 +1380,7 @@ def smartlearn_corsi(s):
 
 
 def smartlearn_file_corso(s, cid):
-    """Elenca i file scaricabili di un corso (risorse e cartelle)."""
+    """Elenca i file scaricabili di un corso (risorse e cartelle). cid è l'id numerico del corso."""
     import re
     from bs4 import BeautifulSoup
     r = s.get(f"{SMARTLEARN_BASE}/course/view.php?id={cid}", timeout=60)
@@ -1438,14 +1438,22 @@ def tab_smartlearn():
             bar = st.progress(0.0, text="Inizio…")
             esiti = []
             for j, cid in enumerate(scelti):
-                area = UFFICIALE.get(classifica(corsi[cid])[1], "Altro") if classifica(corsi[cid])[1] else "Altro"
-                _, area, _ = classifica(corsi[cid])
-                for href, titolo in smartlearn_file_corso(s, (SMARTLEARN_BASE + href) if href.startswith("/") else href):
+                _, area, _ = classifica(corsi[cid])      # cartella dal nome del corso
+                if not area:
+                    area = "Altro"
+                bar.progress(j / len(scelti), text=f"Leggo {corsi[cid]}…")
+                try:
+                    elenco = smartlearn_file_corso(s, cid)
+                except Exception as e:
+                    esiti.append((corsi[cid], area, f"errore lettura corso: {e}"[:80]))
+                    continue
+                for href, titolo in elenco:
                     url = (SMARTLEARN_BASE + href) if href.startswith("/") else href
                     bar.progress(j / len(scelti), text=f"{corsi[cid]}: {titolo}")
                     try:
                         f = smartlearn_scarica(s, url)
                         if not f:
+                            esiti.append((titolo, area, "non scaricabile"))
                             continue
                         nome, mime, b = f
                         sotto = "Moduli didattica asincrona" if any(k in nome.lower() for k in ("modulo", "esercit", "prova")) else "Slide e materiali di studio"
