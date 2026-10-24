@@ -1302,23 +1302,31 @@ def smartlearn_login():
     user, pwd = cfg.get("username"), cfg.get("password")
     if not user or not pwd:
         raise ValueError("mancano le credenziali: aggiungile nei Secrets, sezione [smartlearn]")
+    import re
+    from urllib.parse import urljoin
     s = requests.Session()
     s.headers["User-Agent"] = "Mozilla/5.0 (TFA-Manager)"
-    # 1) la home protetta rimanda alla pagina di login dell'IdP
+    # 1) la home protetta porta alla pagina di login di Moodle, che offre due vie:
+    #    un modulo diretto e il pulsante «Login Portale» (SSO dell'ateneo). Seguiamo il portale.
     r = s.get(f"{SMARTLEARN_BASE}/my/", timeout=60)
-    for _ in range(4):  # seguo i passaggi del login finché non torno su Smart Learn
+    if "idp.unilink.it" not in r.url:
+        m = re.search(r'href="([^"]*/auth/[^"]*)"[^>]*>\s*Login Portale', r.text, re.I) or \
+            re.search(r'href="([^"]*(?:saml|shibboleth|oauth)[^"]*)"', r.text, re.I)
+        if m:
+            r = s.get(urljoin(r.url, m.group(1).replace("&amp;", "&")), timeout=60)
+    for _ in range(6):  # seguo i passaggi del login finché non torno su Smart Learn
         soup = BeautifulSoup(r.text, "html.parser")
-        form = soup.find("form")
+        # scelgo il modulo che contiene un campo password (evito moduli di lingua/ricerca)
+        form = next((f for f in soup.find_all("form") if f.find("input", {"type": "password"})), None) or soup.find("form")
         if form is None:
-            break
-        azione = form.get("action") or r.url
-        if azione.startswith("/"):
-            from urllib.parse import urlparse
-            base = f"{urlparse(r.url).scheme}://{urlparse(r.url).netloc}"
-            azione = base + azione
-        elif not azione.startswith("http"):
-            azione = r.url.rsplit("/", 1)[0] + "/" + azione
+            if SMARTLEARN_BASE in r.url:
+                break
+            raise ValueError("pagina di login non riconosciuta: la struttura del portale è cambiata")
+        azione = urljoin(r.url, form.get("action") or r.url)
         dati = {}
+        for btn in form.find_all("button"):  # alcuni IdP richiedono il nome del pulsante di invio
+            if btn.get("name"):
+                dati[btn["name"]] = btn.get("value", "")
         for i in form.find_all("input"):
             nome = i.get("name")
             if not nome:
