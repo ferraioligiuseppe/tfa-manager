@@ -1543,6 +1543,10 @@ def tab_smartlearn():
     st.caption("Collega il tuo account Smart Learn per importare i materiali dei corsi direttamente nell’area «Materiali del corso». "
                "Le credenziali stanno solo nei Secrets (sezione [smartlearn]); non sono salvate nel database né viste dai colleghi. "
                "Collegamento non ufficiale: se l’ateneo cambia la pagina di accesso potrebbe servire un aggiornamento.")
+    with st.expander("Rivedi l’avviso che vedono i corsisti"):
+        st.markdown(AVVISO_SL)
+        n = q(f"SELECT COUNT(*) AS n FROM {S}.credenziali_sl")["n"].iloc[0]
+        st.caption(f"Corsisti che hanno collegato il proprio account: {int(n)}.")
     if not st.secrets.get("smartlearn", {}).get("username"):
         st.warning("Aggiungi nei Secrets la sezione [smartlearn] con username e password, poi riavvia l’app.")
         st.code('[smartlearn]\nusername = "gferraioli"\npassword = "la-tua-password-unilink"', language="toml")
