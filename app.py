@@ -122,7 +122,7 @@ usa sempre iniziali o codici."""
 # ================================================================ database
 @st.cache_resource
 def engine():
-    return create_engine(st.secrets["db"]["url"], pool_pre_ping=True)
+    return create_engine(st.secrets["db"]["url"], pool_pre_ping=True, pool_size=5, max_overflow=5, pool_recycle=600)
 
 
 DDL = ("" if S == "public" else f"CREATE SCHEMA IF NOT EXISTS {S};") + f"""
@@ -209,6 +209,12 @@ def _init_db(c):
         pd.DataFrame(d["monte_ore"]).to_sql("monte_ore", c, schema=S, if_exists="append", index=False)
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def qc(sql, **p):
+    """Come q(), ma per dati comuni che cambiano di rado (calendario, impostazioni, spot): 5 minuti in memoria."""
+    return q(sql, **p)
+
+
 def q(sql, **p):
     with engine().connect() as c:
         return pd.read_sql(text(sql), c, params=p)
@@ -233,6 +239,7 @@ def salva_personale(tab, df):
 
 
 def salva_comune(tab, df, pk="id"):
+    qc.clear()
     df = df.dropna(how="all")
     if pk == "id":
         df = df.drop(columns="id", errors="ignore")
@@ -412,13 +419,13 @@ def accesso():
 
 # ================================================================ pagine
 def lezioni_gruppo():
-    lez = q(f"SELECT * FROM {S}.lezioni WHERE gruppo=:g ORDER BY data, fascia", g=me().get("gruppo") or "C")
+    lez = qc(f"SELECT * FROM {S}.lezioni WHERE gruppo=:g ORDER BY data, fascia", g=me().get("gruppo") or "C").copy()
     lez["data"] = pd.to_datetime(lez["data"]).dt.date
     return lez
 
 
 def stato_assenze():
-    ins, ass = q(f"SELECT * FROM {S}.insegnamenti"), personale("assenze")
+    ins, ass = qc(f"SELECT * FROM {S}.insegnamenti"), personale("assenze")
     tot = ass.groupby("insegnamento")["ore"].sum() if not ass.empty else pd.Series(dtype=float)
     rows = []
     for _, r in ins.iterrows():
@@ -479,7 +486,7 @@ def pag_calendario():
 def pag_asincrone():
     st.title("Attività asincrone")
     st.caption("Almeno 6.000 caratteri · invio per email al docente · oggetto: «Nome Cognome – Insegnamento».")
-    ins = q(f"SELECT * FROM {S}.insegnamenti")
+    ins = qc(f"SELECT * FROM {S}.insegnamenti")
     editor(personale("asincrone"), "asi", lambda d: salva_personale("asincrone", d),
            stato=st.column_config.SelectboxColumn("Stato", options=STATI_ASI),
            insegnamento=st.column_config.SelectboxColumn("Insegnamento", options=ins["nome"].tolist()),
@@ -495,8 +502,8 @@ def pag_assenze():
     st.title("Assenze e recuperi")
     st.caption("Tetto 20% per insegnamento; ogni assenza si recupera con un seminario «Link per l'Educazione» (uno per insegnamento) e un lavoro concordato. Sul tirocinio non sono ammesse assenze.")
     st.dataframe(stato_assenze(), hide_index=True, width="stretch")
-    ins = q(f"SELECT nome FROM {S}.insegnamenti")["nome"].tolist()
-    sem = q(f"SELECT data, luogo FROM {S}.seminari ORDER BY data")
+    ins = qc(f"SELECT nome FROM {S}.insegnamenti")["nome"].tolist()
+    sem = qc(f"SELECT data, luogo FROM {S}.seminari ORDER BY data")
     st.subheader("Le mie assenze")
     editor(personale("assenze"), "ass", lambda d: salva_personale("assenze", d),
            data=st.column_config.DateColumn("Data", format="DD/MM/YYYY"),
@@ -509,7 +516,7 @@ def pag_assenze():
 def pag_tirocinio():
     st.title("Tirocinio")
     st.caption(f"Scuola: {me().get('scuola_tirocinio') or 'da indicare nel Profilo'}")
-    tir, monte = personale("tirocinio"), q(f"SELECT * FROM {S}.monte_ore")
+    tir, monte = personale("tirocinio"), qc(f"SELECT * FROM {S}.monte_ore")
     fatte = tir.groupby("tipo")["ore"].sum() if not tir.empty else pd.Series(dtype=float)
     for col, (_, m) in zip(st.columns(len(monte)), monte.iterrows()):
         h = float(fatte.get(m["tipo"], 0))
@@ -586,6 +593,33 @@ def anteprima(nome: str, mime: str, b: bytes, key: str):
         st.info("Per questo tipo di file l’anteprima non è disponibile: usa «Scarica».")
 
 
+LIMITE_ANTEPRIMA_MB = 8
+
+
+@st.cache_data(ttl=900, max_entries=12, show_spinner=False)
+def contenuto_documento(id_doc: int, utente: int):
+    r = q(f"SELECT nome_file, mime, contenuto FROM {S}.documenti WHERE id=:i AND utente_id=:u", i=id_doc, u=utente).iloc[0]
+    return r["nome_file"], r["mime"], bytes(r["contenuto"])
+
+
+@st.cache_data(ttl=900, max_entries=12, show_spinner=False)
+def contenuto_materiale(id_mat: int, gruppi: tuple):
+    r = q(f"SELECT nome_file, mime, contenuto FROM {S}.materiali WHERE id=:i AND gruppo = ANY(:g)", i=id_mat, g=list(gruppi)).iloc[0]
+    return r["nome_file"], r["mime"], bytes(r["contenuto"])
+
+
+def apri_file(carica, dimensione: int, key: str):
+    """Scarica dal database solo quando serve; i file grandi si aprono con un clic."""
+    mb = dimensione / 1e6
+    if mb > LIMITE_ANTEPRIMA_MB and not st.session_state.get(f"apri_{key}"):
+        if st.button(f"Apri il file ({mb:.0f} MB)", key=f"btn_{key}"):
+            st.session_state[f"apri_{key}"] = True
+            st.rerun()
+        return None
+    with st.spinner("Apro il file…"):
+        return carica()
+
+
 def elenco_file(docs, key):
     """Tabella dei file con apertura, download ed eliminazione."""
     if docs.empty:
@@ -598,15 +632,17 @@ def elenco_file(docs, key):
     idx = docs.set_index("id")
     scelta = st.selectbox("Apri", docs["id"].tolist(), key=f"sel_{key}",
                           format_func=lambda i: f"{idx.loc[i, 'nome_file']} · v{idx.loc[i, 'versione']}")
-    r = q(f"SELECT nome_file, mime, contenuto FROM {S}.documenti WHERE id=:i AND utente_id=:u", i=int(scelta), u=uid()).iloc[0]
     c1, c2 = st.columns(2)
-    c1.download_button("Scarica", bytes(r["contenuto"]), file_name=r["nome_file"], mime=r["mime"], type="primary", key=f"dl_{key}")
-    if st.toggle("Visualizza qui", key=f"vis_{key}", value=True):
-        anteprima(r["nome_file"], r["mime"], bytes(r["contenuto"]), f"d{key}_{scelta}")
     if c2.button("Elimina", key=f"del_{key}"):
         run(f"DELETE FROM {S}.documenti WHERE id=:i AND utente_id=:u", i=int(scelta), u=uid())
         st.toast("Documento eliminato.")
         st.rerun()
+    f = apri_file(lambda: contenuto_documento(int(scelta), uid()), int(idx.loc[scelta, "dimensione"]), f"d{key}_{scelta}")
+    if f:
+        nome, mime, b = f
+        c1.download_button("Scarica", b, file_name=nome, mime=mime, type="primary", key=f"dl_{key}")
+        if st.toggle("Visualizza qui", key=f"vis_{key}", value=True):
+            anteprima(nome, mime, b, f"d{key}_{scelta}")
 
 
 def gestione_file(tabella: str, righe: pd.DataFrame, aree: list, sottocartelle: list, chiave: str,
@@ -733,8 +769,11 @@ def pag_documenti():
     with main:
         st.subheader(area)
         sotto_list = ["Documenti"] if gruppo == "Generali" else SOTTOCARTELLE
-        for tab, sotto in zip(st.tabs([f"{x} ({len(meta[(meta['area'] == area) & (meta['categoria'] == x)])})" for x in sotto_list]), sotto_list):
-            with tab:
+        n_sotto = {x: len(meta[(meta["area"] == area) & (meta["categoria"] == x)]) for x in sotto_list}
+        scelta_sotto = st.radio("Sottocartella", sotto_list, horizontal=True, key=f"dsotto_{abs(hash(area)) % 10**8}",
+                                format_func=lambda x: f"{x} ({n_sotto[x]})", label_visibility="collapsed")
+        for sotto in [scelta_sotto]:
+            if True:
                 k = f"{abs(hash(area)) % 10**8}_{sotto_list.index(sotto)}"
                 with st.form(f"up_{k}", clear_on_submit=True):
                     files = st.file_uploader("Aggiungi file", accept_multiple_files=True, key=f"fu_{k}")
@@ -981,8 +1020,11 @@ def pag_materiali():
                         format_func=lambda a: f"{a}  ({conteggi.get(a, 0)})")
     with main:
         st.subheader(area)
-        for tab, sotto in zip(st.tabs([f"{x} ({len(meta[(meta['area'] == area) & (meta['categoria'] == x)])})" for x in SOTTO_MATERIALI]), SOTTO_MATERIALI):
-            with tab:
+        n_sotto = {x: len(meta[(meta["area"] == area) & (meta["categoria"] == x)]) for x in SOTTO_MATERIALI}
+        scelta_sotto = st.radio("Sottocartella", SOTTO_MATERIALI, horizontal=True, key=f"msotto_{abs(hash(area)) % 10**8}",
+                                format_func=lambda x: f"{x} ({n_sotto[x]})", label_visibility="collapsed")
+        for sotto in [scelta_sotto]:
+            if True:
                 k = f"m{abs(hash(area)) % 10**8}_{SOTTO_MATERIALI.index(sotto)}"
                 if editore:
                     with st.form(f"mup_{k}", clear_on_submit=True):
@@ -1000,15 +1042,17 @@ def pag_materiali():
                              hide_index=True, width="stretch", column_config={"nome_file": "File"})
                 idx = righe.set_index("id")
                 scelta = st.selectbox("Apri", righe["id"].tolist(), key=f"msel_{k}", format_func=lambda i: idx.loc[i, "nome_file"])
-                r = q(f"SELECT nome_file, mime, contenuto FROM {S}.materiali WHERE id=:i AND gruppo = ANY(:g)",
-                      i=int(scelta), g=gruppi_visibili).iloc[0]
                 c1, c2 = st.columns(2)
-                c1.download_button("Scarica", bytes(r["contenuto"]), file_name=r["nome_file"], mime=r["mime"], type="primary", key=f"mdl_{k}")
                 if editore and c2.button("Elimina dal corso", key=f"mdel_{k}"):
                     run(f"DELETE FROM {S}.materiali WHERE id=:i", i=int(scelta))
                     st.rerun()
-                if st.toggle("Visualizza qui", key=f"mvis_{k}", value=True):
-                    anteprima(r["nome_file"], r["mime"], bytes(r["contenuto"]), f"m{k}_{scelta}")
+                f = apri_file(lambda: contenuto_materiale(int(scelta), tuple(gruppi_visibili)),
+                              int(idx.loc[scelta, "dimensione"]), f"m{k}_{scelta}")
+                if f:
+                    nome, mime, b = f
+                    c1.download_button("Scarica", b, file_name=nome, mime=mime, type="primary", key=f"mdl_{k}")
+                    if st.toggle("Visualizza qui", key=f"mvis_{k}", value=True):
+                        anteprima(nome, mime, b, f"m{k}_{scelta}")
 
 
 def pag_tesi():
@@ -1245,14 +1289,161 @@ def pag_profilo():
             st.rerun()
 
 
+# ================================================================ Smart Learn (solo amministratore)
+SMARTLEARN_BASE = "https://smartlearn.unilink.it"
+
+
+def smartlearn_login():
+    """Login SSO (Shibboleth) a Smart Learn, trovando i campi del modulo da solo.
+    Credenziali solo dai Secrets [smartlearn] username/password. Restituisce una sessione requests autenticata."""
+    import requests
+    from bs4 import BeautifulSoup
+    cfg = st.secrets.get("smartlearn", {})
+    user, pwd = cfg.get("username"), cfg.get("password")
+    if not user or not pwd:
+        raise ValueError("mancano le credenziali: aggiungile nei Secrets, sezione [smartlearn]")
+    s = requests.Session()
+    s.headers["User-Agent"] = "Mozilla/5.0 (TFA-Manager)"
+    # 1) la home protetta rimanda alla pagina di login dell'IdP
+    r = s.get(f"{SMARTLEARN_BASE}/my/", timeout=60)
+    for _ in range(4):  # seguo i passaggi del login finché non torno su Smart Learn
+        soup = BeautifulSoup(r.text, "html.parser")
+        form = soup.find("form")
+        if form is None:
+            break
+        azione = form.get("action") or r.url
+        if azione.startswith("/"):
+            from urllib.parse import urlparse
+            base = f"{urlparse(r.url).scheme}://{urlparse(r.url).netloc}"
+            azione = base + azione
+        elif not azione.startswith("http"):
+            azione = r.url.rsplit("/", 1)[0] + "/" + azione
+        dati = {}
+        for i in form.find_all("input"):
+            nome = i.get("name")
+            if not nome:
+                continue
+            tipo = (i.get("type") or "text").lower()
+            idn = (i.get("id") or "").lower()
+            if tipo in ("hidden", "submit", "button", "checkbox", "radio"):
+                dati[nome] = i.get("value", "")  # campi tecnici (csrf, SAMLResponse, RelayState): valore invariato
+            elif tipo == "password" or "pass" in nome.lower():
+                dati[nome] = pwd
+            elif any(t in nome.lower() for t in ("csrf", "token", "execution", "lt", "_eventid")):
+                dati[nome] = i.get("value", "")  # token anti-frode: valore invariato
+            elif tipo in ("text", "email") or "user" in nome.lower() or "user" in idn or "mail" in nome.lower():
+                dati[nome] = user
+            else:
+                dati[nome] = i.get("value", "")
+        r = s.post(azione, data=dati, timeout=60)
+        if SMARTLEARN_BASE in r.url and "idp" not in r.url:
+            break
+    if "idp.unilink.it" in r.url or "login" in r.url.lower():
+        raise ValueError("login non riuscito: controlla username e password nei Secrets")
+    return s
+
+
+def smartlearn_corsi(s):
+    import re
+    from bs4 import BeautifulSoup
+    r = s.get(f"{SMARTLEARN_BASE}/my/courses.php", timeout=60)
+    soup = BeautifulSoup(r.text, "html.parser")
+    corsi = {}
+    for a in soup.find_all("a", href=re.compile(r"/course/view\.php\?id=\d+")):
+        cid = re.search(r"id=(\d+)", a["href"]).group(1)
+        nome = a.get_text(strip=True)
+        if nome and cid not in corsi:
+            corsi[cid] = nome
+    return corsi
+
+
+def smartlearn_file_corso(s, cid):
+    """Elenca i file scaricabili di un corso (risorse e cartelle)."""
+    import re
+    from bs4 import BeautifulSoup
+    r = s.get(f"{SMARTLEARN_BASE}/course/view.php?id={cid}", timeout=60)
+    soup = BeautifulSoup(r.text, "html.parser")
+    out = []
+    for a in soup.find_all("a", href=re.compile(r"/mod/(resource|folder)/view\.php\?id=\d+")):
+        titolo = a.get_text(" ", strip=True)
+        out.append((a["href"], titolo))
+    return out
+
+
+def smartlearn_scarica(s, url):
+    """Segue una risorsa fino al file vero; restituisce (nome, mime, bytes) o None."""
+    import re
+    r = s.get(url, timeout=120, allow_redirects=True)
+    cd = r.headers.get("Content-Disposition", "")
+    ct = r.headers.get("Content-Type", "")
+    if "text/html" in ct and "application" not in ct:
+        m = re.search(r'href="([^"]+/pluginfile\.php/[^"]+)"', r.text)
+        if not m:
+            return None
+        r = s.get(m.group(1).replace("&amp;", "&"), timeout=120)
+        cd, ct = r.headers.get("Content-Disposition", ""), r.headers.get("Content-Type", "")
+    m = re.search(r'filename="?([^"]+)"?', cd)
+    nome = m.group(1) if m else url.rsplit("/", 1)[-1] + ".bin"
+    return nome, ct or "application/octet-stream", r.content
+
+
+def tab_smartlearn():
+    st.caption("Collega il tuo account Smart Learn per importare i materiali dei corsi direttamente nell’area «Materiali del corso». "
+               "Le credenziali stanno solo nei Secrets (sezione [smartlearn]); non sono salvate nel database né viste dai colleghi. "
+               "Collegamento non ufficiale: se l’ateneo cambia la pagina di accesso potrebbe servire un aggiornamento.")
+    if not st.secrets.get("smartlearn", {}).get("username"):
+        st.warning("Aggiungi nei Secrets la sezione [smartlearn] con username e password, poi riavvia l’app.")
+        st.code('[smartlearn]\nusername = "gferraioli"\npassword = "la-tua-password-unilink"', language="toml")
+        return
+    if st.button("Connetti e leggi i miei corsi", type="primary"):
+        try:
+            with st.spinner("Accedo a Smart Learn…"):
+                s = smartlearn_login()
+                st.session_state["sl_corsi"] = smartlearn_corsi(s)
+            st.success(f"Connesso: trovati {len(st.session_state['sl_corsi'])} corsi.")
+        except Exception as e:
+            st.error(f"Connessione non riuscita: {e}")
+    corsi = st.session_state.get("sl_corsi")
+    if corsi:
+        scelti = st.multiselect("Corsi da importare", list(corsi), format_func=lambda c: corsi[c], default=list(corsi))
+        gdest = st.selectbox("Visibile al gruppo", GRUPPI + ["Tutti"], index=GRUPPI.index(me().get("gruppo") or "C"))
+        if st.button("Scarica e importa i materiali", disabled=not scelti):
+            s = smartlearn_login()
+            bar = st.progress(0.0, text="Inizio…")
+            esiti = []
+            for j, cid in enumerate(scelti):
+                area = UFFICIALE.get(classifica(corsi[cid])[1], "Altro") if classifica(corsi[cid])[1] else "Altro"
+                _, area, _ = classifica(corsi[cid])
+                for href, titolo in smartlearn_file_corso(s, (SMARTLEARN_BASE + href) if href.startswith("/") else href):
+                    url = (SMARTLEARN_BASE + href) if href.startswith("/") else href
+                    bar.progress(j / len(scelti), text=f"{corsi[cid]}: {titolo}")
+                    try:
+                        f = smartlearn_scarica(s, url)
+                        if not f:
+                            continue
+                        nome, mime, b = f
+                        sotto = "Moduli didattica asincrona" if any(k in nome.lower() for k in ("modulo", "esercit", "prova")) else "Slide e materiali di studio"
+                        ok = salva_materiale(gdest, area, sotto, nome, mime, b, f"Da Smart Learn: {corsi[cid]}")
+                        esiti.append((nome, area, "salvato" if ok else "già presente"))
+                    except Exception as e:
+                        esiti.append((titolo, area, f"errore: {e}"[:80]))
+            bar.progress(1.0, text="Completato")
+            ed = pd.DataFrame(esiti, columns=["File", "Cartella", "Esito"])
+            st.success(f"Importazione finita: {int((ed['Esito'] == 'salvato').sum())} nuovi file.")
+            st.dataframe(ed, hide_index=True, width="stretch")
+
+
 def pag_admin():
     st.title("Amministrazione")
     st.caption("L'amministratore gestisce iscritti e dati comuni. Non ha accesso ai documenti né ai registri dei corsisti.")
-    t1, t2, t3, t4, t5, t6 = st.tabs(["Iscritti", "Calendario", "Insegnamenti", "Seminari", "Uso generazione testi", "Spot pnev.it"])
+    t1, t2, t3, t4, t5, t6, t7 = st.tabs(["Iscritti", "Calendario", "Insegnamenti", "Seminari", "Uso generazione testi", "Spot pnev.it", "Smart Learn"])
+    with t7:
+        tab_smartlearn()
     with t6:
         attivo = st.toggle("Mostra lo spot nella barra laterale", value=impostazione("spot_attivo", "1") == "1")
         if attivo != (impostazione("spot_attivo", "1") == "1"):
             run(f"INSERT INTO {S}.impostazioni VALUES ('spot_attivo', :v) ON CONFLICT (chiave) DO UPDATE SET valore=:v", v="1" if attivo else "0")
+            qc.clear()
             st.rerun()
         c1, c2 = st.columns([1, 2])
         firma = c1.text_input("Firma", value=impostazione("spot_firma", FIRMA_DEFAULT))
@@ -1260,6 +1451,7 @@ def pag_admin():
         if st.button("Salva firma"):
             for k, v in (("spot_firma", firma), ("spot_titoli", titoli)):
                 run(f"INSERT INTO {S}.impostazioni VALUES (:k, :v) ON CONFLICT (chiave) DO UPDATE SET valore=:v", k=k, v=v.strip())
+                qc.clear()
             st.toast("Firma aggiornata.")
         st.caption("I messaggi ruotano ogni 8 secondi nell’ordine indicato. Ai link viene aggiunta in automatico la sorgente "
                    "«tfa-manager» per riconoscere le visite nelle statistiche di pnev.it; nessun dato dei corsisti viene raccolto.")
@@ -1448,7 +1640,7 @@ def pag_genera():
         st.warning("Generazione non attiva: l'amministratore deve inserire la chiave API nella sezione [ai] dei Secrets.")
         return
     bloccato = controlla_limiti("Le bozze vanno rilette e personalizzate: gli elaborati devono essere originali.")
-    ins = q(f"SELECT nome FROM {S}.insegnamenti ORDER BY nome")["nome"].tolist()
+    ins = qc(f"SELECT nome FROM {S}.insegnamenti ORDER BY nome")["nome"].tolist()
     docs = q(f"SELECT id, nome_file, versione, categoria FROM {S}.documenti WHERE utente_id=:u ORDER BY caricato_il DESC", u=uid())
 
     tipo = st.selectbox("Che cosa vuoi scrivere?", list(TIPI_TESTO))
@@ -1516,7 +1708,7 @@ def pag_genera():
 
 # ================================================================ spot pnev.it
 def impostazione(chiave, default=""):
-    r = q(f"SELECT valore FROM {S}.impostazioni WHERE chiave=:k", k=chiave)
+    r = qc(f"SELECT valore FROM {S}.impostazioni WHERE chiave=:k", k=chiave)
     return r["valore"].iloc[0] if not r.empty else default
 
 
@@ -1529,7 +1721,7 @@ def mostra_spot():
     """Riquadro a rotazione nella barra laterale. Nessun tracciamento degli utenti: i link portano solo la sorgente (utm)."""
     if impostazione("spot_attivo", "1") != "1":
         return
-    sp = q(f"SELECT titolo, testo, pulsante, link FROM {S}.spot WHERE attivo ORDER BY ordine, id")
+    sp = qc(f"SELECT titolo, testo, pulsante, link FROM {S}.spot WHERE attivo ORDER BY ordine, id")
     if sp.empty:
         return
     import html as _h
