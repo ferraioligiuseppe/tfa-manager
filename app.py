@@ -181,6 +181,7 @@ MIGRAZIONI_COLONNE = {
     "documenti": ["area TEXT"],
     "utenti": ["limite_mensile INT", "citta_partenza TEXT", "pwd_temporanea BOOLEAN DEFAULT FALSE",
                "referente BOOLEAN DEFAULT FALSE", "firma TEXT"],
+    "asincrone": ["scadenza DATE", "destinatario TEXT"],
     "viaggi": ["data DATE", "partenza TEXT", "destinazione TEXT", "mezzo TEXT", "dettaglio TEXT",
                "creato_il TIMESTAMPTZ DEFAULT now()"],
 }
@@ -203,6 +204,19 @@ def migra_schema(c):
     for tabella, colonne in MIGRAZIONI_COLONNE.items():
         for definizione in colonne:
             aggiungi_colonna(c, tabella, definizione)
+
+
+SCADENZE_ASI = {  # inviare entro (circa 7-10 giorni prima dell'esame del Gruppo C)
+    "Didattica metacognitiva": "2026-11-04", "Ped. e Did. disabilità intellettiva": "2026-11-26",
+    "Modelli integrati": "2026-12-04", "Neuropsichiatria Infantile": "2026-12-10",
+    "Psicologia dello sviluppo": "2026-12-31", "Did. disabilità sensoriali": "2027-01-07"}
+
+
+def applica_scadenze(c):
+    """Imposta la scadenza sulle asincrone che non ne hanno ancora una (non sovrascrive quelle modificate)."""
+    for ins, data in SCADENZE_ASI.items():
+        c.execute(text(f"UPDATE {S}.asincrone SET scadenza=:d WHERE insegnamento=:i AND scadenza IS NULL"),
+                  {"d": data, "i": ins})
 
 
 def popola_iniziale(c):
@@ -237,6 +251,8 @@ def avvia_db():
         c.execute(text("SELECT pg_advisory_xact_lock(724501)"))
         migra_schema(c)
     _popola_una_volta()
+    with engine().begin() as c:
+        applica_scadenze(c)
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -514,18 +530,84 @@ def pag_calendario():
 
 
 def pag_asincrone():
+    from urllib.parse import quote
     st.title("Attività asincrone")
-    st.caption("Almeno 6.000 caratteri · invio per email al docente · oggetto: «Nome Cognome – Insegnamento».")
+    st.caption("Almeno 6.000 caratteri · invio per email al docente · oggetto: «Nome Cognome – Insegnamento». "
+               "La scadenza è indicativa (circa una settimana prima dell’esame); puoi modificarla.")
     ins = qc(f"SELECT * FROM {S}.insegnamenti")
-    editor(personale("asincrone"), "asi", lambda d: salva_personale("asincrone", d),
+    email_doc = dict(zip(ins["nome"], ins["email"]))
+    asi = personale("asincrone")
+
+    # --- riquadri in alto: prossima scadenza e inviate
+    da_inviare = asi[~asi["stato"].isin(["Inviato", "Approvato"])].copy()
+    da_inviare["scadenza"] = pd.to_datetime(da_inviare["scadenza"], errors="coerce")
+    prossime = da_inviare.dropna(subset=["scadenza"]).sort_values("scadenza")
+    c1, c2 = st.columns(2)
+    if not prossime.empty:
+        p0 = prossime.iloc[0]
+        giorni = (p0["scadenza"].date() - OGGI).days
+        c1.metric("Prossima scadenza", f"{p0['scadenza']:%d/%m}",
+                  f"{p0['insegnamento']} · {'scaduta' if giorni < 0 else f'tra {giorni} gg'}",
+                  delta_color="inverse" if giorni < 10 else "normal")
+    c2.metric("Inviate", f"{int(asi['stato'].isin(['Inviato','Approvato']).sum())} / {len(asi)}")
+
+    # --- avvisi urgenti
+    for _, r in prossime.iterrows():
+        g = (r["scadenza"].date() - OGGI).days
+        if g < 0:
+            st.error(f"**{r['insegnamento']}**: scadenza superata ({r['scadenza']:%d/%m}). Invia appena possibile.")
+        elif g <= 10:
+            st.warning(f"**{r['insegnamento']}**: mancano {g} giorni alla scadenza ({r['scadenza']:%d/%m}).")
+
+    # --- tabella modificabile con scadenza
+    st.subheader("Le mie asincrone")
+    vis = asi.copy()
+    vis["scad_dt"] = pd.to_datetime(vis["scadenza"], errors="coerce")
+    vis["mancano"] = vis["scad_dt"].apply(lambda d: "" if pd.isna(d) else (f"{(d.date()-OGGI).days} gg" if (d.date()-OGGI).days >= 0 else "scaduta"))
+    editor(vis.drop(columns=["scad_dt", "mancano"]), "asi", lambda d: salva_personale("asincrone", d),
+           hide=("id", "utente_id", "destinatario"),
            stato=st.column_config.SelectboxColumn("Stato", options=STATI_ASI),
            insegnamento=st.column_config.SelectboxColumn("Insegnamento", options=ins["nome"].tolist()),
+           scadenza=st.column_config.DateColumn("Scadenza", format="DD/MM/YYYY"),
            data_invio=st.column_config.DateColumn("Inviato il", format="DD/MM/YYYY"))
-    st.subheader("Oggetti email")
-    for _, r in ins.iterrows():
-        st.code(f"{me().get('nome', '')} {me().get('cognome', '')} – {r['nome']}", language=None)
-        if r["email"]:
-            st.caption(f"A: {r['email']} · {r['docente']}")
+
+    # --- preparazione email + segna inviata
+    st.subheader("Prepara l’email e segna l’invio")
+    st.caption("Scegli un’asincrona pronta: l’app compila destinatario, oggetto e testo. Clicchi «Apri nella posta», "
+               "alleghi il file (è anche in Documenti) e invii tu. Poi torni qui e segni l’invio.")
+    pronte = asi[asi["stato"].isin(["Pronto", "Da personalizzare"])]
+    scelta = st.selectbox("Asincrona", pronte["id"].tolist() if not pronte.empty else [],
+                          format_func=lambda i: f"{pronte.set_index('id').loc[i,'insegnamento']} — {pronte.set_index('id').loc[i,'titolo'] or ''}")
+    if scelta:
+        r = pronte.set_index("id").loc[scelta]
+        dest = email_doc.get(r["insegnamento"], "")
+        nome_c = f"{me().get('nome','')} {me().get('cognome','')}"
+        oggetto = f"{nome_c} – {r['insegnamento']}"
+        corpo = (f"Gentile docente,\nin allegato invio l'attività asincrona per l'insegnamento "
+                 f"«{r['insegnamento']}».\n\nCordiali saluti,\n{nome_c}\nMatricola {me().get('matricola','')} – Gruppo {me().get('gruppo')}")
+        c1, c2 = st.columns([3, 1])
+        c1.text_input("Destinatario", value=dest or "(email del docente non in archivio: controlla su Smart Learn)", key=f"dest_{scelta}")
+        c1.code(oggetto, language=None)
+        if dest:
+            link = f"mailto:{dest}?subject={quote(oggetto)}&body={quote(corpo)}"
+            c2.link_button("Apri nella posta", link, type="primary")
+        else:
+            c2.caption("Aggiungi l’email del docente in Amministrazione › Insegnamenti.")
+        st.caption("Ricorda di allegare il file dell’elaborato prima di inviare.")
+        if st.button("Segna come inviata (oggi)", type="primary"):
+            run(f"UPDATE {S}.asincrone SET stato='Inviato', data_invio=CURRENT_DATE, destinatario=:d WHERE id=:i AND utente_id=:u",
+                d=dest, i=int(scelta), u=uid())
+            st.toast("Segnata come inviata.")
+            st.rerun()
+
+    # --- storico invii (traccia)
+    inviate = asi[asi["stato"].isin(["Inviato", "Approvato"])].copy()
+    if not inviate.empty:
+        st.subheader("Inviate — traccia")
+        inviate["quando"] = pd.to_datetime(inviate["data_invio"], errors="coerce").dt.strftime("%d/%m/%Y").fillna("—")
+        st.dataframe(inviate[["insegnamento", "titolo", "stato", "quando", "destinatario"]],
+                     hide_index=True, width="stretch",
+                     column_config={"quando": "Inviata il", "destinatario": "A"})
 
 
 def pag_assenze():
