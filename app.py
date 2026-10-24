@@ -524,10 +524,117 @@ def pag_tirocinio():
         h = float(fatte.get(m["tipo"], 0))
         col.metric(m["voce"], f"{h:g}/{float(m['ore']):g} h")
         col.progress(min(h / float(m["ore"]), 1.0))
-    editor(tir, "tir", lambda d: salva_personale("tirocinio", d),
-           data=st.column_config.DateColumn("Data", format="DD/MM/YYYY"),
-           tipo=st.column_config.SelectboxColumn("Registro", options=TIPI_TIR),
-           ore=st.column_config.NumberColumn("Ore", min_value=0.0, step=0.5))
+
+    t1, t2 = st.tabs(["Registro ore", "Documenti di tirocinio (PDF)"])
+    with t1:
+        editor(tir, "tir", lambda d: salva_personale("tirocinio", d),
+               data=st.column_config.DateColumn("Data", format="DD/MM/YYYY"),
+               tipo=st.column_config.SelectboxColumn("Registro", options=TIPI_TIR),
+               ore=st.column_config.NumberColumn("Ore", min_value=0.0, step=0.5))
+    with t2:
+        st.caption("Compila i campi e l’app genera il PDF impaginato con i titoli prescritti, i tuoi dati e la firma grafica. "
+                   "Lo scarichi e lo alleghi alla mail che invii al docente. I campi lasciati vuoti restano come righe da completare.")
+        prof = q(f"SELECT firma, scuola_tirocinio FROM {S}.utenti WHERE id=:u", u=uid()).iloc[0]
+        firma = prof["firma"] or f"{me().get('nome','')} {me().get('cognome','')}"
+        tipo = st.selectbox("Tipo di documento", list(DOC_TIROCINIO))
+        c1, c2, c3 = st.columns(3)
+        scuola = c1.text_input("Scuola", value=prof["scuola_tirocinio"] or "")
+        classe = c2.text_input("Classe di riferimento", placeholder="es. 2ª B Liceo scientifico")
+        data_inc = c3.date_input("Data", format="DD/MM/YYYY", value=None)
+        alunno = st.text_input("Alunno (iniziali o codice, mai nome)", placeholder="es. alunno M., disabilità intellettiva lieve")
+        st.markdown("**Contenuti** (facoltativi: quello che scrivi entra nel PDF; il resto resta da completare a mano)")
+        campi = {}
+        for titolo, sotto in DOC_TIROCINIO[tipo]:
+            with st.expander(titolo):
+                if sotto:
+                    for v in sotto:
+                        campi[f"{titolo}|{v}"] = st.text_area(v, key=f"tir_{tipo}_{titolo}_{v}", height=70)
+                else:
+                    campi[titolo] = st.text_area(titolo, key=f"tir_{tipo}_{titolo}", height=90)
+        if st.button("Genera il PDF", type="primary"):
+            d = data_inc.strftime("%d/%m/%Y") if data_inc else ""
+            pdf = pdf_tirocinio(tipo, scuola, classe, alunno, d, campi, firma)
+            nome = f"{tipo.replace(':','').replace(' ','_')}_{classe or 'classe'}.pdf".replace("/", "-")
+            run(f"""INSERT INTO {S}.tirocinio_doc (utente_id,tipo,scuola,classe,alunno,data_incontro,contenuto)
+                    VALUES (:u,:t,:s,:c,:a,:d,:j)""", u=uid(), t=tipo, s=scuola, c=classe, a=alunno,
+                d=data_inc, j=json.dumps(campi, ensure_ascii=False))
+            salva_file({"bytes": pdf, "name": nome, "mime": "application/pdf"}, ATTIVITA[1], "Elaborati e consegne", None, f"Tirocinio: {tipo}")
+            st.success("PDF generato e salvato in Documenti › Tirocinio indiretto › Elaborati e consegne.")
+            st.download_button("Scarica il PDF", pdf, file_name=nome, mime="application/pdf", type="primary")
+            st.info(f"Ora invialo tu per email al docente dal tuo indirizzo. Oggetto suggerito: «{me().get('nome','')} {me().get('cognome','')} – Tirocinio indiretto – {tipo}».")
+
+
+# ================================================================ tirocinio indiretto — PDF
+STRUTTURA_RELAZIONE = [
+    ("1. Presentazione del macrocontesto", [
+        "Denominazione e tipologia dell'istituto", "Descrizione del contesto territoriale",
+        "Analisi dei documenti strategici (PTOF, PI, RAV, PdM)", "Analisi della partecipazione agli organi collegiali"]),
+    ("2. Presentazione del microcontesto", [
+        "Presentazione della classe e dell'alunno", "Osservazione libera della classe e dell'alunno",
+        "Osservazione strutturata dell'alunno", "Riflessioni conclusive dell'osservazione"]),
+    ("3. Progettazione U.D.A.", [
+        "Titolo del progetto", "Finalità", "Competenze chiave", "Obiettivi specifici", "Attività", "Verifica e valutazione"]),
+    ("4. Rendicontazione dell'esperienza", []),
+    ("5. Conclusioni", []),
+    ("6. Bibliografia e sitografia", []),
+    ("7. Allegati", []),
+]
+DOC_TIROCINIO = {
+    "Relazione di tirocinio indiretto": STRUTTURA_RELAZIONE,
+    "Scheda: analisi del PTOF": [("Analisi critica del PTOF in ottica inclusiva", [
+        "Denominazione e tipologia", "Contesto territoriale", "PTOF, PI, RAV, PdM", "Rielaborazione critica"])],
+    "Scheda: osservazione libera (film/classe)": [("Osservazione descrittiva", [
+        "Contesto osservato", "Descrizione (solo fatti osservabili)", "Riflessione interpretativa separata"])],
+    "Scheda: osservazione degli organi collegiali": [("Osservazione organo collegiale", [
+        "Organo, data, luogo", "Ordine del giorno e decisioni", "Ruolo del docente di sostegno", "Riflessione"])],
+}
+
+
+def pdf_tirocinio(tipo, scuola, classe, alunno, data_inc, campi, firma):
+    """Genera il PDF del documento di tirocinio con intestazione, struttura e firma grafica."""
+    import io as _io
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.units import cm
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+    from reportlab.lib import colors
+    buf = _io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=2*cm, bottomMargin=2*cm, leftMargin=2.2*cm, rightMargin=2.2*cm)
+    ss = getSampleStyleSheet()
+    H = ParagraphStyle("H", parent=ss["Heading2"], textColor=colors.HexColor("#1F3864"), spaceBefore=12, spaceAfter=6)
+    sub = ParagraphStyle("sub", parent=ss["Heading3"], textColor=colors.HexColor("#2E5597"), fontSize=11, spaceBefore=6, spaceAfter=2)
+    body = ParagraphStyle("b", parent=ss["Normal"], fontSize=10.5, leading=15, alignment=4)
+    small = ParagraphStyle("s", parent=ss["Normal"], fontSize=8.5, textColor=colors.grey)
+    el = [Paragraph("Link Campus University — Corso di specializzazione per le attività di sostegno (XI ciclo)", small),
+          Paragraph(f"<b>{tipo}</b>", ParagraphStyle("t", parent=ss["Title"], fontSize=15, textColor=colors.HexColor("#1F3864"))),
+          Spacer(1, 6)]
+    testa = [["Corsista", f"{me().get('nome','')} {me().get('cognome','')}"], ["Matricola", me().get("matricola") or ""],
+             ["Gruppo", me().get("gruppo") or "C"], ["Scuola", scuola or ""], ["Classe di riferimento", classe or ""]]
+    if alunno:
+        testa.append(["Alunno (anonimizzato)", alunno])
+    if data_inc:
+        testa.append(["Data", data_inc])
+    t = Table(testa, colWidths=[4.5*cm, 11*cm])
+    t.setStyle(TableStyle([("BOX",(0,0),(-1,-1),0.5,colors.grey),("INNERGRID",(0,0),(-1,-1),0.3,colors.lightgrey),
+        ("BACKGROUND",(0,0),(0,-1),colors.HexColor("#DCE6F0")),("FONTSIZE",(0,0),(-1,-1),9.5),
+        ("VALIGN",(0,0),(-1,-1),"TOP"),("LEFTPADDING",(0,0),(-1,-1),6),("TOPPADDING",(0,0),(-1,-1),4),("BOTTOMPADDING",(0,0),(-1,-1),4)]))
+    el += [t, Spacer(1, 12)]
+    for titolo, sotto in DOC_TIROCINIO[tipo]:
+        el.append(Paragraph(titolo, H))
+        if sotto:
+            for v in sotto:
+                el.append(Paragraph(v, sub))
+                testo = (campi or {}).get(f"{titolo}|{v}", "").strip()
+                el.append(Paragraph(testo.replace("\n", "<br/>") if testo else "<i>______________________________</i>", body))
+        else:
+            testo = (campi or {}).get(titolo, "").strip()
+            el.append(Paragraph(testo.replace("\n", "<br/>") if testo else "<i>______________________________</i>", body))
+    el.append(Spacer(1, 22))
+    el.append(Paragraph("Firma del corsista", small))
+    el.append(Paragraph(f"<font size=14><i>{firma or (me().get('nome','')+' '+me().get('cognome',''))}</i></font>", body))
+    el.append(Paragraph("Firma apposta in forma grafica tramite l'app; non costituisce firma digitale qualificata.", small))
+    doc.build(el)
+    return buf.getvalue()
 
 
 def salva_file(f, area, sotto, capitolo=None, note=""):
@@ -1250,7 +1357,8 @@ def pag_profilo():
             ("nome", "Nome"), ("cognome", "Cognome"), ("matricola", "Matricola"), ("email", "Email"),
             ("email_istituzionale", "Email istituzionale"), ("telefono", "Telefono"), ("indirizzo", "Indirizzo"),
             ("scuola_tirocinio", "Scuola del tirocinio diretto"), ("tutor_scolastico", "Tutor scolastico"),
-            ("citta_partenza", "Luogo di partenza per i viaggi")])}
+            ("citta_partenza", "Luogo di partenza per i viaggi"),
+            ("firma", "Firma per i documenti (nome come vuoi che compaia)")])}
         v["gruppo"] = st.selectbox("Gruppo", GRUPPI, index=GRUPPI.index(u["gruppo"]) if u["gruppo"] in GRUPPI else 2)
         if st.form_submit_button("Salva profilo", type="primary"):
             run(f"UPDATE {S}.utenti SET " + ", ".join(f"{k}=:{k}" for k in v) + " WHERE id=:u", u=uid(), **v)
@@ -1939,7 +2047,7 @@ def password_provvisoria():
 # ================================================================ avvio
 try:
     import hashlib as _hl
-    init_db(_hl.md5((DDL + "|v4").encode()).hexdigest())
+    init_db(_hl.md5((DDL + "|v5").encode()).hexdigest())
 except Exception as e:
     st.error(f"Connessione al database non riuscita: {e}")
     if "deadlock" in str(e).lower() or "lock" in str(e).lower():
